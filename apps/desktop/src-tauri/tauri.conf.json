@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Kaven File Copy", "width": 1100, "height": 760, "minWidth": 760, "minHeight": 560 }],
+    "windows": [{ "title": "Kaven File Copy", "width": 1100, "height": 760, "minWidth": 420, "minHeight": 480 }],
     "security": { "csp": null }
   },
   "bundle": { "active": true, "targets": "all" }
