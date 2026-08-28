@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "./api/tauri";
+import SourceTreeNode from "./SourceTreeNode.vue";
+import { buildSourceTree } from "./source-tree";
 import type { CopyPlan, CopyRule, JobEvent, JobSummary, ProgressEvent, SourceEntry } from "./types/generated";
 
 type View = "rules" | "editor" | "jobs";
@@ -20,6 +22,7 @@ const jobEvents = ref<Record<string, JobEvent[]>>({});
 const pathExclusions = computed(() => new Set(
   selectedRule.value?.filters.exclude.filter((item) => item.kind === "path").map((item) => item.value) ?? [],
 ));
+const sourceTree = computed(() => buildSourceTree(sourceEntries.value));
 
 function newRule(): CopyRule {
   return {
@@ -45,7 +48,10 @@ function edit(rule?: CopyRule) {
 
 async function choosePath(kind: "source" | "destination", directory: boolean) {
   const value = await open({ directory, multiple: false });
-  if (value && selectedRule.value) selectedRule.value[kind].path = value;
+  if (value && selectedRule.value) {
+    selectedRule.value[kind].path = value;
+    if (kind === "source") sourceEntries.value = [];
+  }
 }
 
 function changeTrigger(event: Event) {
@@ -64,7 +70,11 @@ async function browseSource() {
 
 function toggleExcluded(path: string, checked: boolean) {
   if (!selectedRule.value) return;
-  selectedRule.value.filters.exclude = selectedRule.value.filters.exclude.filter((item) => !(item.kind === "path" && item.value === path));
+  const descendantPrefix = `${path}/`;
+  selectedRule.value.filters.exclude = selectedRule.value.filters.exclude.filter((item) => !(
+    item.kind === "path"
+    && (item.value === path || (checked && item.value.startsWith(descendantPrefix)))
+  ));
   if (checked) selectedRule.value.filters.exclude.push({ kind: "path", value: path });
 }
 
@@ -179,7 +189,7 @@ onMounted(async () => {
       <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="view='rules'">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
       <section class="card form-grid">
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
-        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div></label>
+        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" @change="sourceEntries = []" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div></label>
         <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" /><button @click="choosePath('destination', true)">Browse</button></div></label>
         <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
         <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
@@ -196,7 +206,15 @@ onMounted(async () => {
       </section>
       <section class="card"><div class="toolbar"><h3>Exclusions</h3><span></span><button @click="addGlob">Add glob</button><button @click="browseSource">Browse source tree</button></div>
         <div v-for="(item,index) in selectedRule.filters.exclude.filter(i => i.kind === 'glob')" :key="index" class="field-action"><input v-model="item.value" /><button @click="selectedRule.filters.exclude.splice(selectedRule.filters.exclude.indexOf(item),1)">Remove</button></div>
-        <div class="source-tree"><label v-for="entry in sourceEntries" :key="entry.relativePath"><input type="checkbox" :checked="pathExclusions.has(entry.relativePath)" @change="toggleExcluded(entry.relativePath, ($event.target as HTMLInputElement).checked)" /><span>{{ entry.directory ? '▸' : '·' }} {{ entry.relativePath }}</span></label></div>
+        <ul v-if="sourceTree.length" class="source-tree" role="tree" aria-label="Source exclusions">
+          <SourceTreeNode
+            v-for="node in sourceTree"
+            :key="node.relativePath"
+            :node="node"
+            :excluded-paths="pathExclusions"
+            @toggle-excluded="toggleExcluded"
+          />
+        </ul>
       </section>
       <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">Preview</button></div>
         <p v-if="plan">{{ plan.stats.filesToCopy }} files / {{ plan.stats.bytesToCopy }} bytes to copy; {{ plan.stats.filesToSkip }} skipped; {{ plan.stats.warnings }} warnings.</p>
