@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.kaven.filecopy",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev:web",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },

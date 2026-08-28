@@ -103,3 +103,14 @@ fn invalid_rule_uses_documented_exit_code() {
     assert_eq!(status.code(), Some(2));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn missing_rule_uses_execution_error_exit_code() {
+    let missing = std::env::temp_dir().join(format!("kfc-missing-{}.json", Uuid::new_v4()));
+    let status = Command::new(env!("CARGO_BIN_EXE_kfc"))
+        .args(["rule", "validate"])
+        .arg(missing)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(3));
+}

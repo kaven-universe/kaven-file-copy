@@ -377,7 +377,29 @@ fn safe_join(root: &Path, relative: &Path) -> Result<PathBuf> {
     {
         return Err(KfcError::PathEscape(relative.display().to_string()));
     }
-    Ok(root.join(relative))
+    let joined = root.join(relative);
+    let mut existing = joined.as_path();
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| KfcError::PathEscape(joined.display().to_string()))?;
+            }
+            Err(source) => {
+                return Err(KfcError::Io {
+                    path: existing.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    let resolved = fs::canonicalize(existing).at(existing)?;
+    if !resolved.starts_with(root) {
+        return Err(KfcError::PathEscape(joined.display().to_string()));
+    }
+    Ok(joined)
 }
 
 fn copy_one(source: &Path, target: &Path, preserve_mtime: bool, job_id: Uuid) -> Result<u64> {
@@ -458,6 +480,36 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 mod tests {
     use super::*;
     use kfc_core::{EndpointConfig, Exclusion, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+
+    #[cfg(unix)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "could not create test junction: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_file(link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_dir(link).unwrap();
+    }
 
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("kfc-test-{label}-{}", Uuid::new_v4()));
@@ -603,6 +655,30 @@ mod tests {
             .unwrap();
         assert_eq!(summary.status, JobStatus::Cancelled);
         assert!(!destination.join("file.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn destination_link_escape_is_rejected_during_execution() {
+        let root = temp_root("destination-link");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        let outside = root.join("outside");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(source.join("nested/file.txt"), b"do not escape").unwrap();
+        let rule = rule(source, destination.clone());
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+        let link = destination.join("nested");
+        create_directory_link(&outside, &link);
+
+        let result = engine.execute(&rule, &plan, &AtomicBool::new(false), |_| {});
+
+        assert!(matches!(result, Err(KfcError::PathEscape(_))));
+        assert!(!outside.join("file.txt").exists());
+        remove_directory_link(&link);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -55,10 +55,14 @@ The desktop executable is generated under `target/debug/` for a debug build.
 
 ```text
 cd apps/desktop
-npm run tauri dev
+npm run dev
 ```
 
 Automatic and scheduled rules run while the desktop application is open. V1 does not install a permanent operating-system service.
+
+`npm run dev` starts both Vite and the Tauri/Rust process. `npm run dev:web` is only for frontend development in a browser, where native dialogs, persistence, and copy commands are unavailable. The equivalent explicit Tauri command is `npm run tauri -- dev`; running `npm run tauri` without a subcommand only prints the Tauri CLI help.
+
+If port `5173` is reported as already in use, stop any separately started `dev:web` or stale Vite process before launching the desktop application.
 
 ## CLI
 

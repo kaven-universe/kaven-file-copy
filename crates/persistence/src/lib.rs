@@ -7,6 +7,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use kfc_core::{CopyRule, JobSummary};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -65,7 +66,12 @@ impl FileRepositories {
                 source,
             })?;
             if entry.path().extension().and_then(|value| value.to_str()) == Some("json") {
-                rules.push(read_json(&entry.path())?);
+                match read_json(&entry.path()) {
+                    Ok(rule) => rules.push(rule),
+                    Err(failure) => {
+                        warn!(path = %entry.path().display(), %failure, "skipping unreadable rule");
+                    }
+                }
             }
         }
         rules.sort_by_key(|rule| rule.name.to_lowercase());
@@ -122,7 +128,12 @@ impl FileRepositories {
             })?;
             let summary = entry.path().join("summary.json");
             if summary.is_file() {
-                jobs.push(read_json(&summary)?);
+                match read_json(&summary) {
+                    Ok(job) => jobs.push(job),
+                    Err(failure) => {
+                        warn!(path = %summary.display(), %failure, "skipping unreadable job summary");
+                    }
+                }
             }
         }
         jobs.sort_by_key(|job| std::cmp::Reverse(job.started_at));
@@ -262,7 +273,9 @@ fn read_dir(path: &Path) -> Result<fs::ReadDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{CopyOptions, EndpointConfig, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{
+        CopyOptions, EndpointConfig, FilterConfig, JobStatus, RULE_SCHEMA_VERSION, TriggerConfig,
+    };
 
     fn test_rule() -> CopyRule {
         CopyRule {
@@ -292,6 +305,48 @@ mod tests {
         rule.name = "Updated".into();
         repositories.save_rule(&rule).unwrap();
         assert_eq!(repositories.list_rules().unwrap(), vec![rule]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_rule_does_not_hide_valid_rules() {
+        let root = std::env::temp_dir().join(format!("kfc-persistence-test-{}", Uuid::new_v4()));
+        let repositories = FileRepositories::new(&root);
+        let rule = test_rule();
+        repositories.save_rule(&rule).unwrap();
+        fs::write(
+            repositories.rules_dir().join("broken.json"),
+            b"{ not json }",
+        )
+        .unwrap();
+
+        assert_eq!(repositories.list_rules().unwrap(), vec![rule]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_job_does_not_hide_valid_job_summaries() {
+        let root = std::env::temp_dir().join(format!("kfc-persistence-test-{}", Uuid::new_v4()));
+        let repositories = FileRepositories::new(&root);
+        let timestamp = Utc::now();
+        let summary = JobSummary {
+            job_id: Uuid::new_v4(),
+            rule_id: Uuid::new_v4(),
+            started_at: timestamp,
+            finished_at: timestamp,
+            status: JobStatus::Succeeded,
+            copied_files: 1,
+            skipped_files: 0,
+            failed_files: 0,
+            copied_bytes: 4,
+            errors: Vec::new(),
+        };
+        repositories.save_job_summary(&summary).unwrap();
+        let broken = repositories.jobs_dir().join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("summary.json"), b"{ not json }").unwrap();
+
+        assert_eq!(repositories.list_job_summaries().unwrap(), vec![summary]);
         fs::remove_dir_all(root).unwrap();
     }
 }

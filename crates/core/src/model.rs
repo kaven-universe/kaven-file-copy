@@ -7,20 +7,16 @@ use uuid::Uuid;
 pub const RULE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CopyRule {
     pub schema_version: u32,
     pub id: Uuid,
     pub name: String,
-    #[serde(default = "default_true")]
     pub enabled: bool,
     pub source: EndpointConfig,
     pub destination: EndpointConfig,
-    #[serde(default)]
     pub filters: FilterConfig,
-    #[serde(default)]
     pub copy: CopyOptions,
-    #[serde(default)]
     pub trigger: TriggerConfig,
 }
 
@@ -59,6 +55,11 @@ impl CopyRule {
                 "maxConcurrency must not exceed 64".into(),
             ));
         }
+        if self.copy.retry_count > 20 {
+            return Err(crate::KfcError::InvalidRule(
+                "retryCount must not exceed 20".into(),
+            ));
+        }
         match &self.trigger {
             TriggerConfig::Watch { debounce_ms } if *debounce_ms < 100 => {
                 return Err(crate::KfcError::InvalidRule(
@@ -81,12 +82,8 @@ impl CopyRule {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum EndpointConfig {
     Local { path: PathBuf },
 }
@@ -100,37 +97,28 @@ impl EndpointConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilterConfig {
-    #[serde(default)]
     pub exclude: Vec<Exclusion>,
-    #[serde(default = "default_true")]
     pub include_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Exclusion {
     Path { value: String },
     Glob { value: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CopyOptions {
-    #[serde(default)]
     pub mode: CopyMode,
-    #[serde(default)]
     pub compare: CompareStrategy,
-    #[serde(default)]
     pub overwrite: OverwritePolicy,
-    #[serde(default)]
     pub symlinks: SymlinkPolicy,
-    #[serde(default = "default_true")]
     pub preserve_mtime: bool,
-    #[serde(default = "default_concurrency")]
     pub max_concurrency: usize,
-    #[serde(default = "default_retries")]
     pub retry_count: u32,
 }
 
@@ -187,12 +175,11 @@ pub enum SymlinkPolicy {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TriggerConfig {
     #[default]
     Manual,
     Watch {
-        #[serde(default = "default_debounce_ms")]
         debounce_ms: u64,
     },
     Interval {
@@ -203,10 +190,6 @@ pub enum TriggerConfig {
         #[serde(default)]
         timezone: Option<String>,
     },
-}
-
-const fn default_debounce_ms() -> u64 {
-    1000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,4 +271,54 @@ pub struct ProgressEvent {
     pub total_files: u64,
     pub copied_bytes: u64,
     pub total_bytes: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_rule() -> CopyRule {
+        CopyRule {
+            schema_version: RULE_SCHEMA_VERSION,
+            id: Uuid::new_v4(),
+            name: "Schema test".into(),
+            enabled: true,
+            source: EndpointConfig::Local {
+                path: "source".into(),
+            },
+            destination: EndpointConfig::Local {
+                path: "destination".into(),
+            },
+            filters: FilterConfig::default(),
+            copy: CopyOptions::default(),
+            trigger: TriggerConfig::Manual,
+        }
+    }
+
+    #[test]
+    fn v1_deserialization_requires_all_schema_fields() {
+        let mut value = serde_json::to_value(test_rule()).unwrap();
+        value.as_object_mut().unwrap().remove("filters");
+        assert!(serde_json::from_value::<CopyRule>(value).is_err());
+    }
+
+    #[test]
+    fn v1_deserialization_rejects_unknown_fields() {
+        let mut value = serde_json::to_value(test_rule()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".into(), serde_json::Value::Bool(true));
+        assert!(serde_json::from_value::<CopyRule>(value).is_err());
+    }
+
+    #[test]
+    fn retry_count_matches_schema_limit() {
+        let mut rule = test_rule();
+        rule.copy.retry_count = 21;
+        assert!(matches!(
+            rule.validate_structure(),
+            Err(crate::KfcError::InvalidRule(_))
+        ));
+    }
 }

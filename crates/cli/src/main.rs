@@ -166,16 +166,21 @@ fn watch(path: &Path, json: bool) -> Result<u8> {
     };
     let source = rule.source.path().clone();
     let cancelled = install_cancel_handler()?;
-    println!("Watching {}", source.display());
-    kfc_scheduler::watch_debounced(&source, debounce, || {
-        if cancelled.load(Ordering::Relaxed) {
-            return false;
-        }
-        if let Err(error) = run_with_cancel(path, false, json, &cancelled) {
-            eprintln!("synchronization failed: {error:#}");
-        }
-        true
-    })?;
+    eprintln!("Watching {}", source.display());
+    kfc_scheduler::watch_debounced(
+        &source,
+        debounce,
+        || {
+            if cancelled.load(Ordering::Relaxed) {
+                return false;
+            }
+            if let Err(error) = run_with_cancel(path, false, json, &cancelled) {
+                eprintln!("synchronization failed: {error:#}");
+            }
+            true
+        },
+        || cancelled.load(Ordering::Relaxed),
+    )?;
     Ok(4)
 }
 
@@ -228,6 +233,9 @@ fn exit_for_status(status: &JobStatus) -> u8 {
 fn error_exit_code(failure: &anyhow::Error) -> u8 {
     if failure.downcast_ref::<serde_json::Error>().is_some() {
         return 2;
+    }
+    if failure.downcast_ref::<std::io::Error>().is_some() {
+        return 3;
     }
     if let Some(failure) = failure.downcast_ref::<kfc_core::KfcError>() {
         return match failure {

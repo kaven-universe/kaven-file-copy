@@ -27,28 +27,51 @@ pub fn next_cron_time(expression: &str, after: DateTime<Utc>) -> Result<Option<D
     Ok(schedule.after(&after).next())
 }
 
-pub fn watch_debounced<F>(source: &Path, debounce: Duration, mut on_change: F) -> Result<()>
+pub fn watch_debounced<F, S>(
+    source: &Path,
+    debounce: Duration,
+    mut on_change: F,
+    mut should_stop: S,
+) -> Result<()>
 where
     F: FnMut() -> bool,
+    S: FnMut() -> bool,
 {
     let (sender, receiver) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = sender.send(event);
     })?;
     watcher.watch(source, RecursiveMode::Recursive)?;
+    let poll_interval = Duration::from_millis(200);
     loop {
-        receiver
-            .recv()
-            .map_err(|_| SchedulerError::Disconnected)??;
+        let event = loop {
+            if should_stop() {
+                return Ok(());
+            }
+            match receiver.recv_timeout(poll_interval) {
+                Ok(event) => break event,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(SchedulerError::Disconnected);
+                }
+            }
+        };
+        event?;
         let mut last = Instant::now();
         loop {
+            if should_stop() {
+                return Ok(());
+            }
             let remaining = debounce.saturating_sub(last.elapsed());
-            match receiver.recv_timeout(remaining) {
+            if remaining.is_zero() {
+                break;
+            }
+            match receiver.recv_timeout(remaining.min(poll_interval)) {
                 Ok(event) => {
                     event?;
                     last = Instant::now();
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(SchedulerError::Disconnected);
                 }
@@ -68,5 +91,19 @@ mod tests {
     fn cron_has_a_next_occurrence() {
         let next = next_cron_time("0/10 * * * * * *", Utc::now()).unwrap();
         assert!(next.is_some());
+    }
+
+    #[test]
+    fn watcher_can_stop_without_a_file_event() {
+        let root = std::env::temp_dir().join(format!("kfc-watch-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        watch_debounced(
+            &root,
+            Duration::from_secs(1),
+            || panic!("change callback should not run"),
+            || true,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

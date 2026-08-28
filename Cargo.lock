@@ -1913,6 +1913,7 @@ dependencies = [
  "chrono",
  "globset",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -1939,6 +1940,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tracing",
  "uuid",
 ]
 
@@ -1951,6 +1953,7 @@ dependencies = [
  "kfc-core",
  "notify",
  "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]

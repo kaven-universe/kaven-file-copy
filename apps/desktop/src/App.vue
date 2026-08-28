@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, toRaw } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
@@ -22,13 +22,13 @@ const pathExclusions = computed(() => new Set(
 ));
 
 function newRule(): CopyRule {
-  return reactive({
+  return {
     schemaVersion: 1, id: crypto.randomUUID(), name: "New copy rule", enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
     filters: { exclude: [], includeHidden: true },
     copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2 },
     trigger: { type: "manual" },
-  });
+  };
 }
 
 async function refresh() {
@@ -36,9 +36,10 @@ async function refresh() {
 }
 
 function edit(rule?: CopyRule) {
-  selectedRule.value = reactive(structuredClone(rule ?? newRule()));
+  selectedRule.value = reactive(structuredClone(rule ? toRaw(rule) : newRule()));
   sourceEntries.value = [];
   plan.value = null;
+  message.value = "";
   view.value = "editor";
 }
 
@@ -81,13 +82,29 @@ async function preview() {
   await act(async () => { plan.value = await api.previewRule(selectedRule.value!); });
 }
 
+async function previewSavedRule(rule: CopyRule) {
+  edit(rule);
+  await preview();
+}
+
 async function run(rule: CopyRule) {
   progress.value = null;
-  await act(async () => { const summary = await api.executeRule(rule); jobs.value.unshift(summary); progress.value = null; view.value = "jobs"; });
+  view.value = "jobs";
+  await act(async () => {
+    const summary = await api.executeRule(structuredClone(toRaw(rule)));
+    jobs.value = [summary, ...jobs.value.filter((job) => job.jobId !== summary.jobId)];
+    progress.value = null;
+  });
+}
+
+async function toggleRuleEnabled(rule: CopyRule) {
+  const updated = structuredClone(toRaw(rule));
+  updated.enabled = !updated.enabled;
+  await act(async () => { await api.saveRule(updated); await refresh(); });
 }
 
 function duplicateRule(rule: CopyRule) {
-  const copy = structuredClone(rule);
+  const copy = structuredClone(toRaw(rule));
   copy.id = crypto.randomUUID();
   copy.name = `${copy.name} (copy)`;
   edit(copy);
@@ -115,7 +132,18 @@ async function exportRule(rule: CopyRule) {
 async function importRule() {
   const path = await open({ multiple: false, filters: [{ name: "KFC rule", extensions: ["json"] }] });
   if (!path) return;
-  await act(async () => { const rule = JSON.parse(await readTextFile(path)) as CopyRule; await api.validateRule(rule); edit(rule); });
+  await act(async () => {
+    const rule = JSON.parse(await readTextFile(path)) as CopyRule;
+    await api.validateRule(rule);
+    if (rules.value.some((existing) => existing.id === rule.id)) {
+      const overwrite = confirm(`A rule named “${rule.name}” already uses this ID. Select OK to overwrite it, or Cancel to import a new copy.`);
+      if (!overwrite) {
+        rule.id = crypto.randomUUID();
+        rule.name = `${rule.name} (imported)`;
+      }
+    }
+    edit(rule);
+  });
 }
 
 async function act(action: () => Promise<void>) {
@@ -144,7 +172,7 @@ onMounted(async () => {
       <div v-if="!rules.length" class="empty">No rules yet. Create one to start copying.</div>
       <article v-for="rule in rules" :key="rule.id" class="card rule-card">
         <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ rule.trigger.type }} · {{ rule.enabled ? 'enabled' : 'disabled' }}</small></div>
-        <div class="actions"><button @click="exportRule(rule)">Export</button><button @click="duplicateRule(rule)">Duplicate</button><button @click="edit(rule)">Edit</button><button @click="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click="run(rule)">Run</button></div>
+        <div class="actions"><button @click="exportRule(rule)">Export</button><button @click="duplicateRule(rule)">Duplicate</button><button :disabled="busy" @click="previewSavedRule(rule)">Preview</button><button @click="edit(rule)">Edit</button><button :disabled="busy" @click="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click="run(rule)">Run</button></div>
       </article>
     </main>
     <main v-else-if="view === 'editor' && selectedRule">
@@ -156,10 +184,15 @@ onMounted(async () => {
         <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
         <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
         <label>Trigger<select :value="selectedRule.trigger.type" @change="changeTrigger"><option value="manual">Manual</option><option value="watch">Watch changes</option><option value="interval">Fixed interval</option><option value="cron">Cron</option></select></label>
-        <label>Retries<input v-model.number="selectedRule.copy.retryCount" type="number" min="0" max="10" /></label>
+        <label>Concurrency<input v-model.number="selectedRule.copy.maxConcurrency" type="number" min="1" max="64" /></label>
+        <label>Retries<input v-model.number="selectedRule.copy.retryCount" type="number" min="0" max="20" /></label>
         <label v-if="selectedRule.trigger.type === 'watch'">Debounce (ms)<input v-model.number="selectedRule.trigger.debounceMs" type="number" min="100" /></label>
         <label v-if="selectedRule.trigger.type === 'interval'">Interval (seconds)<input v-model.number="selectedRule.trigger.seconds" type="number" min="1" /></label>
         <label v-if="selectedRule.trigger.type === 'cron'" class="wide">Cron expression<input v-model="selectedRule.trigger.expression" /></label>
+        <label class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>Rule enabled</span></label>
+        <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>Include hidden files</span></label>
+        <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
+        <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">Automatic jobs run only while the desktop application is open.</p>
       </section>
       <section class="card"><div class="toolbar"><h3>Exclusions</h3><span></span><button @click="addGlob">Add glob</button><button @click="browseSource">Browse source tree</button></div>
         <div v-for="(item,index) in selectedRule.filters.exclude.filter(i => i.kind === 'glob')" :key="index" class="field-action"><input v-model="item.value" /><button @click="selectedRule.filters.exclude.splice(selectedRule.filters.exclude.indexOf(item),1)">Remove</button></div>

@@ -11,3 +11,6 @@ kfc-core = { path = "../core" }
 notify.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+uuid.workspace = true
+
