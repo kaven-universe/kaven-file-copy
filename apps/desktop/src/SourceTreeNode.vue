@@ -1,23 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { SourceTreeNode } from "./source-tree";
 
 const props = withDefaults(defineProps<{
   node: SourceTreeNode;
   excludedPaths: ReadonlySet<string>;
   includedPaths: ReadonlySet<string>;
+  expandAll?: boolean;
   depth?: number;
   ancestorExcluded?: boolean;
 }>(), {
   depth: 0,
   ancestorExcluded: false,
+  expandAll: false,
 });
 
 const emit = defineEmits<{
   toggleExcluded: [path: string, checked: boolean];
 }>();
 
-const expanded = ref(false);
+const expanded = ref(props.expandAll);
 const hasChildren = computed(() => props.node.directory && props.node.children.length > 0);
 const directlyExcluded = computed(() => props.excludedPaths.has(props.node.relativePath));
 const directlyIncluded = computed(() => props.includedPaths.has(props.node.relativePath));
@@ -30,6 +32,10 @@ const hasDescendantOverride = computed(() => {
   const prefix = `${props.node.relativePath}/`;
   const overrides = effectivelyExcluded.value ? props.includedPaths : props.excludedPaths;
   return [...overrides].some((path) => path.startsWith(prefix));
+});
+
+watch([() => props.expandAll, () => props.node], ([expandAll]) => {
+  expanded.value = expandAll;
 });
 
 function toggleExpansion() {
@@ -82,6 +88,7 @@ function forwardExclusion(path: string, checked: boolean) {
         :node="child"
         :excluded-paths="excludedPaths"
         :included-paths="includedPaths"
+        :expand-all="expandAll"
         :depth="depth + 1"
         :ancestor-excluded="effectivelyExcluded"
         @toggle-excluded="forwardExclusion"

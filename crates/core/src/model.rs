@@ -233,6 +233,22 @@ pub struct PlanStats {
     pub bytes_to_copy: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlanProgressPhase {
+    Scanning,
+    Planning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanProgressEvent {
+    pub phase: PlanProgressPhase,
+    pub completed_entries: u64,
+    pub total_entries: Option<u64>,
+    pub relative_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct JobSummary {
@@ -330,5 +346,21 @@ mod tests {
             rule.validate_structure(),
             Err(crate::KfcError::InvalidRule(_))
         ));
+    }
+
+    #[test]
+    fn plan_progress_serializes_for_the_frontend_contract() {
+        let value = serde_json::to_value(PlanProgressEvent {
+            phase: PlanProgressPhase::Planning,
+            completed_entries: 7,
+            total_entries: Some(10),
+            relative_path: Some("nested/file.txt".into()),
+        })
+        .unwrap();
+
+        assert_eq!(value["phase"], "planning");
+        assert_eq!(value["completedEntries"], 7);
+        assert_eq!(value["totalEntries"], 10);
+        assert_eq!(value["relativePath"], "nested/file.txt");
     }
 }

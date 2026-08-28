@@ -35,8 +35,15 @@ export interface PlanStats {
   bytesToCopy: number;
 }
 
-export interface PlanItem { action: string; relativePath: string; size: number; reason: string }
+export type PlanAction = "create-directory" | "copy-file" | "skip" | "warn";
+export interface PlanItem { action: PlanAction; relativePath: string; size: number; reason: string }
 export interface CopyPlan { ruleId: string; items: PlanItem[]; stats: PlanStats }
+export interface PlanProgressEvent {
+  phase: "scanning" | "planning";
+  completedEntries: number;
+  totalEntries: number | null;
+  relativePath: string | null;
+}
 export interface JobSummary {
   jobId: string; ruleId: string; startedAt: string; finishedAt: string;
   status: "succeeded" | "partial" | "failed" | "cancelled";

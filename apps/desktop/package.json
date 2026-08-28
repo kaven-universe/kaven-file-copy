@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite",
-    "test": "tsx --test tests/source-tree.test.ts",
+    "test": "tsx --test tests/*.test.ts",
     "build": "vue-tsc --noEmit && vite build",
     "tauri": "tauri"
   },

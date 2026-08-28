@@ -4,9 +4,20 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "./api/tauri";
+import { buildPreviewTree, filterPlanItems, type PreviewActionFilter, type PreviewView } from "./preview-filter";
+import PreviewTreeNode from "./PreviewTreeNode.vue";
 import SourceTreeNode from "./SourceTreeNode.vue";
-import { buildSourceTree, normalizeTreePath, setPathExcluded } from "./source-tree";
-import type { CopyPlan, CopyRule, JobEvent, JobSummary, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
+import {
+  buildSourceTree,
+  filterSourceEntries,
+  hasPathDescendantOverride,
+  isPathExcluded,
+  normalizeTreePath,
+  setPathExcluded,
+  type SourceEntryTypeFilter,
+  type SourceView,
+} from "./source-tree";
+import type { CopyPlan, CopyRule, JobEvent, JobSummary, PlanProgressEvent, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
 
 type View = "rules" | "editor" | "jobs";
 const view = ref<View>("rules");
@@ -15,10 +26,17 @@ const jobs = ref<JobSummary[]>([]);
 const selectedRule = ref<CopyRule | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
+const sourceQuery = ref("");
+const sourceType = ref<SourceEntryTypeFilter>("all");
+const sourceView = ref<SourceView>("tree");
 const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
 const busy = ref(false);
 const message = ref("");
 const progress = ref<ProgressEvent | null>(null);
+const previewProgress = ref<PlanProgressEvent | null>(null);
+const previewQuery = ref("");
+const previewAction = ref<PreviewActionFilter>("all");
+const previewView = ref<PreviewView>("list");
 const jobEvents = ref<Record<string, JobEvent[]>>({});
 const pathExclusions = computed(() => new Set(
   selectedRule.value?.filters.exclude.filter((item) => item.kind === "path").map((item) => normalizeTreePath(item.value)) ?? [],
@@ -26,7 +44,24 @@ const pathExclusions = computed(() => new Set(
 const pathInclusions = computed(() => new Set(
   selectedRule.value?.filters.include.map(normalizeTreePath) ?? [],
 ));
-const sourceTree = computed(() => buildSourceTree(sourceEntries.value));
+const filteredSourceEntries = computed(() => filterSourceEntries(
+  sourceEntries.value,
+  sourceType.value,
+  sourceQuery.value,
+));
+const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value));
+const sourceFilterActive = computed(() => (
+  sourceType.value !== "all" || sourceQuery.value.trim().length > 0
+));
+const filteredPlanItems = computed(() => filterPlanItems(
+  plan.value?.items ?? [],
+  previewAction.value,
+  previewQuery.value,
+));
+const previewTree = computed(() => buildPreviewTree(filteredPlanItems.value));
+const previewFilterActive = computed(() => (
+  previewAction.value !== "all" || previewQuery.value.trim().length > 0
+));
 
 function newRule(): CopyRule {
   return {
@@ -66,7 +101,11 @@ function edit(rule?: CopyRule) {
   copy.filters.include ??= [];
   selectedRule.value = reactive(copy);
   sourceEntries.value = [];
+  sourceQuery.value = "";
+  sourceType.value = "all";
   plan.value = null;
+  previewQuery.value = "";
+  previewAction.value = "all";
   message.value = "";
   view.value = "editor";
 }
@@ -76,10 +115,16 @@ async function choosePath(kind: "source" | "destination", directory: boolean) {
     const value = await open({ directory, multiple: false });
     if (value && selectedRule.value) {
       selectedRule.value[kind].path = value;
-      if (kind === "source") sourceEntries.value = [];
+      if (kind === "source") clearSourceBrowser();
       await rememberRecentPath(kind, value);
     }
   });
+}
+
+function clearSourceBrowser() {
+  sourceEntries.value = [];
+  sourceQuery.value = "";
+  sourceType.value = "all";
 }
 
 function changeTrigger(event: Event) {
@@ -112,6 +157,14 @@ function toggleExcluded(path: string, checked: boolean) {
   selectedRule.value.filters.include = state.included;
 }
 
+function sourceEntryExcluded(path: string) {
+  return isPathExcluded(path, pathExclusions.value, pathInclusions.value);
+}
+
+function sourceEntryHasOverride(path: string) {
+  return hasPathDescendantOverride(path, pathExclusions.value, pathInclusions.value);
+}
+
 function addGlob() {
   selectedRule.value?.filters.exclude.push({ kind: "glob", value: "**/*.tmp" });
 }
@@ -129,10 +182,23 @@ async function persist() {
 
 async function preview() {
   if (!selectedRule.value) return;
-  await act(async () => {
-    plan.value = await api.previewRule(selectedRule.value!);
-    await rememberRulePaths(selectedRule.value!);
-  });
+  plan.value = null;
+  previewQuery.value = "";
+  previewAction.value = "all";
+  previewProgress.value = {
+    phase: "scanning",
+    completedEntries: 0,
+    totalEntries: null,
+    relativePath: null,
+  };
+  try {
+    await act(async () => {
+      plan.value = await api.previewRule(selectedRule.value!);
+      await rememberRulePaths(selectedRule.value!);
+    });
+  } finally {
+    previewProgress.value = null;
+  }
 }
 
 async function previewSavedRule(rule: CopyRule) {
@@ -207,6 +273,7 @@ async function act(action: () => Promise<void>) {
 }
 
 onMounted(async () => {
+  await listen<PlanProgressEvent>("preview-progress", (event) => { previewProgress.value = event.payload; });
   await listen<ProgressEvent>("job-progress", (event) => { progress.value = event.payload; });
   await listen<JobSummary>("job-finished", (event) => {
     jobs.value = [event.payload, ...jobs.value.filter((job) => job.jobId !== event.payload.jobId)];
@@ -233,7 +300,7 @@ onMounted(async () => {
       <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="view='rules'">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
       <section class="card form-grid">
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
-        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="sourceEntries = []" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
+        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
         <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" list="recent-destination-paths" autocomplete="off" /><button @click="choosePath('destination', true)">Browse</button></div><datalist id="recent-destination-paths"><option v-for="path in recentPaths.destinations" :key="path" :value="path"></option></datalist></label>
         <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
         <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
@@ -250,20 +317,80 @@ onMounted(async () => {
       </section>
       <section class="card"><div class="toolbar"><h3>Exclusions</h3><span></span><button @click="addGlob">Add glob</button><button @click="browseSource">Browse source tree</button></div>
         <div v-for="(item,index) in selectedRule.filters.exclude.filter(i => i.kind === 'glob')" :key="index" class="field-action"><input v-model="item.value" /><button @click="selectedRule.filters.exclude.splice(selectedRule.filters.exclude.indexOf(item),1)">Remove</button></div>
-        <ul v-if="sourceTree.length" class="source-tree" role="tree" aria-label="Source exclusions">
+        <div v-if="sourceEntries.length" class="result-filters source-filters" role="search">
+          <input v-model="sourceQuery" type="search" placeholder="Filter source path" aria-label="Filter source entries by path" />
+          <select v-model="sourceType" aria-label="Filter source entries by type">
+            <option value="all">All entries</option>
+            <option value="folders">Folders</option>
+            <option value="files">Files</option>
+          </select>
+          <div class="view-switch" role="group" aria-label="Source layout">
+            <button type="button" :class="{ active: sourceView === 'list' }" :aria-pressed="sourceView === 'list'" @click="sourceView = 'list'">List</button>
+            <button type="button" :class="{ active: sourceView === 'tree' }" :aria-pressed="sourceView === 'tree'" @click="sourceView = 'tree'">Tree</button>
+          </div>
+          <small>{{ filteredSourceEntries.length }} of {{ sourceEntries.length }} entries</small>
+        </div>
+        <ul v-if="filteredSourceEntries.length && sourceView === 'tree'" class="source-tree" role="tree" aria-label="Source exclusions">
           <SourceTreeNode
             v-for="node in sourceTree"
             :key="node.relativePath"
             :node="node"
             :excluded-paths="pathExclusions"
             :included-paths="pathInclusions"
+            :expand-all="sourceFilterActive"
             @toggle-excluded="toggleExcluded"
           />
         </ul>
+        <ul v-else-if="filteredSourceEntries.length" class="source-list" aria-label="Source exclusions list">
+          <li v-for="entry in filteredSourceEntries" :key="entry.relativePath">
+            <label class="source-list-row">
+              <input
+                type="checkbox"
+                :checked="sourceEntryExcluded(entry.relativePath)"
+                :indeterminate="sourceEntryHasOverride(entry.relativePath)"
+                :aria-label="`Exclude ${entry.relativePath}`"
+                @change="toggleExcluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
+              />
+              <span :title="entry.relativePath">{{ entry.relativePath }}</span>
+              <small>{{ entry.directory ? 'Folder' : 'File' }}</small>
+            </label>
+          </li>
+        </ul>
+        <p v-else-if="sourceEntries.length" class="filter-empty">No source entries match the current filter.</p>
       </section>
-      <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">Preview</button></div>
+      <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? 'Previewing...' : 'Preview' }}</button></div>
+        <div v-if="previewProgress" class="preview-progress" role="status" aria-live="polite">
+          <progress v-if="previewProgress.phase === 'planning'" :value="previewProgress.completedEntries" :max="previewProgress.totalEntries || 1"></progress>
+          <progress v-else></progress>
+          <p><span v-if="previewProgress.phase === 'scanning'">Scanning source · {{ previewProgress.completedEntries }} entries found</span><span v-else>Building plan · {{ previewProgress.completedEntries }} / {{ previewProgress.totalEntries ?? 0 }} entries</span><small v-if="previewProgress.relativePath">{{ previewProgress.relativePath }}</small></p>
+        </div>
         <p v-if="plan">{{ plan.stats.filesToCopy }} files / {{ plan.stats.bytesToCopy }} bytes to copy; {{ plan.stats.filesToSkip }} skipped; {{ plan.stats.warnings }} warnings.</p>
-        <div v-if="plan" class="plan"><div v-for="item in plan.items" :key="item.relativePath"><code>{{ item.action }}</code> {{ item.relativePath }} <small>{{ item.reason }}</small></div></div>
+        <div v-if="plan && plan.items.length" class="result-filters preview-filters" role="search">
+          <input v-model="previewQuery" type="search" placeholder="Filter path or reason" aria-label="Filter preview by path or reason" />
+          <select v-model="previewAction" aria-label="Filter preview by action">
+            <option value="all">All actions</option>
+            <option value="copy-file">Copy files</option>
+            <option value="create-directory">Create folders</option>
+            <option value="skip">Skipped</option>
+            <option value="warn">Warnings</option>
+          </select>
+          <div class="view-switch" role="group" aria-label="Preview layout">
+            <button type="button" :class="{ active: previewView === 'list' }" :aria-pressed="previewView === 'list'" @click="previewView = 'list'">List</button>
+            <button type="button" :class="{ active: previewView === 'tree' }" :aria-pressed="previewView === 'tree'" @click="previewView = 'tree'">Tree</button>
+          </div>
+          <small>{{ filteredPlanItems.length }} of {{ plan.items.length }} items</small>
+        </div>
+        <div v-if="plan && filteredPlanItems.length && previewView === 'list'" class="plan"><div v-for="item in filteredPlanItems" :key="`${item.action}-${item.relativePath}`"><code>{{ item.action }}</code> {{ item.relativePath }} <small>{{ item.reason }}</small></div></div>
+        <ul v-else-if="plan && filteredPlanItems.length" class="preview-tree" role="tree" aria-label="Preview plan tree">
+          <PreviewTreeNode
+            v-for="node in previewTree"
+            :key="node.relativePath"
+            :node="node"
+            :expand-all="previewFilterActive"
+          />
+        </ul>
+        <p v-else-if="plan && plan.items.length" class="filter-empty">No preview items match the current filter.</p>
+        <p v-else-if="plan" class="filter-empty">No planned operations.</p>
       </section>
     </main>
     <main v-else>

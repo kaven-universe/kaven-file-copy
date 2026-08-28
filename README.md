@@ -7,9 +7,9 @@ Kaven File Copy is a lightweight cross-platform desktop application and CLI for 
 - Vue 3 + TypeScript desktop UI powered by Tauri 2.
 - Shared Rust copy engine used by both the desktop application and CLI.
 - Local file or directory sources and local directory destinations.
-- Hierarchical relative-path and glob exclusions, including child inclusion overrides in the UI.
+- Filterable list/tree relative-path exclusions, glob exclusions, and child inclusion overrides in the UI.
 - Versioned JSON rules with import/export and JSON Schema.
-- Incremental planning based on size and modification time, plus dry-run preview.
+- Incremental planning based on size and modification time, plus dry-run preview with live progress, filtering, and list/tree result views.
 - Bounded concurrent copying, retries, cooperative cancellation, and modification-time preservation.
 - Temporary-file commit with destination backup/restore during replacement.
 - Manual, debounced filesystem-watch, fixed-interval, and cron triggers.

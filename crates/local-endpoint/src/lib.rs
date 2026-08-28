@@ -19,7 +19,8 @@ use chrono::Utc;
 use filetime::FileTime;
 use kfc_core::{
     CompareStrategy, CopyPlan, CopyRule, ExclusionMatcher, FileError, IoResultExt, JobStatus,
-    JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanStats, ProgressEvent, Result,
+    JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
+    PlanProgressPhase, PlanStats, ProgressEvent, Result,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -63,11 +64,34 @@ impl LocalCopyEngine {
     }
 
     pub fn plan(&self, rule: &CopyRule) -> Result<CopyPlan> {
+        self.plan_internal(rule, None::<fn(&PlanProgressEvent)>)
+    }
+
+    pub fn plan_with_progress<F>(&self, rule: &CopyRule, progress: F) -> Result<CopyPlan>
+    where
+        F: FnMut(&PlanProgressEvent),
+    {
+        self.plan_internal(rule, Some(progress))
+    }
+
+    fn plan_internal<F>(&self, rule: &CopyRule, mut progress: Option<F>) -> Result<CopyPlan>
+    where
+        F: FnMut(&PlanProgressEvent),
+    {
         let paths = self.validate_rule(rule)?;
         let matcher = ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
         let plan_source_root;
+        emit_plan_progress(
+            &mut progress,
+            PlanProgressEvent {
+                phase: PlanProgressPhase::Scanning,
+                completed_entries: 0,
+                total_entries: None,
+                relative_path: None,
+            },
+        );
 
         if paths.source_is_file {
             let name = paths.source.file_name().ok_or_else(|| {
@@ -79,6 +103,24 @@ impl LocalCopyEngine {
                 .ok_or_else(|| KfcError::PathEscape(paths.source.display().to_string()))?
                 .to_owned();
             let relative = Path::new(name);
+            emit_plan_progress(
+                &mut progress,
+                PlanProgressEvent {
+                    phase: PlanProgressPhase::Scanning,
+                    completed_entries: 1,
+                    total_entries: None,
+                    relative_path: Some(relative.to_owned()),
+                },
+            );
+            emit_plan_progress(
+                &mut progress,
+                PlanProgressEvent {
+                    phase: PlanProgressPhase::Planning,
+                    completed_entries: 0,
+                    total_entries: Some(1),
+                    relative_path: None,
+                },
+            );
             if !matcher.is_excluded(relative)
                 && (rule.filters.include_hidden || !is_hidden(relative))
             {
@@ -91,27 +133,65 @@ impl LocalCopyEngine {
                     &mut stats,
                 )?;
             }
+            emit_plan_progress(
+                &mut progress,
+                PlanProgressEvent {
+                    phase: PlanProgressPhase::Planning,
+                    completed_entries: 1,
+                    total_entries: Some(1),
+                    relative_path: Some(relative.to_owned()),
+                },
+            );
         } else {
             plan_source_root = paths.source.clone();
-            let walker = WalkDir::new(&paths.source).follow_links(false).into_iter();
-            for entry in walker.filter_entry(|entry| {
-                if entry.path() == paths.source {
-                    return true;
+            let total_entries = if progress.is_some() {
+                let mut total_entries = 0;
+                for entry in WalkDir::new(&paths.source)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_entry(|entry| should_visit(entry, &paths.source, rule, &matcher))
+                {
+                    let entry = entry.map_err(|error| {
+                        KfcError::InvalidRule(format!("source scan failed: {error}"))
+                    })?;
+                    if entry.path() == paths.source {
+                        continue;
+                    }
+                    let relative = entry
+                        .path()
+                        .strip_prefix(&paths.source)
+                        .map_err(|_| KfcError::PathEscape(entry.path().display().to_string()))?;
+                    total_entries += 1;
+                    emit_plan_progress(
+                        &mut progress,
+                        PlanProgressEvent {
+                            phase: PlanProgressPhase::Scanning,
+                            completed_entries: total_entries,
+                            total_entries: None,
+                            relative_path: Some(relative.to_owned()),
+                        },
+                    );
                 }
-                entry
-                    .path()
-                    .strip_prefix(&paths.source)
-                    .map(|relative| {
-                        let visible = rule.filters.include_hidden || !is_hidden(relative);
-                        visible
-                            && if entry.file_type().is_dir() {
-                                matcher.should_descend(relative)
-                            } else {
-                                !matcher.is_excluded(relative)
-                            }
-                    })
-                    .unwrap_or(false)
-            }) {
+                emit_plan_progress(
+                    &mut progress,
+                    PlanProgressEvent {
+                        phase: PlanProgressPhase::Planning,
+                        completed_entries: 0,
+                        total_entries: Some(total_entries),
+                        relative_path: None,
+                    },
+                );
+                Some(total_entries)
+            } else {
+                None
+            };
+
+            let mut completed_entries = 0;
+            for entry in WalkDir::new(&paths.source)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| should_visit(entry, &paths.source, rule, &matcher))
+            {
                 let entry = entry.map_err(|error| {
                     KfcError::InvalidRule(format!("source scan failed: {error}"))
                 })?;
@@ -123,6 +203,12 @@ impl LocalCopyEngine {
                     .strip_prefix(&paths.source)
                     .map_err(|_| KfcError::PathEscape(entry.path().display().to_string()))?;
                 if matcher.is_excluded(relative) {
+                    report_completed_entry(
+                        &mut progress,
+                        &mut completed_entries,
+                        total_entries,
+                        relative,
+                    );
                     continue;
                 }
                 let file_type = entry.file_type();
@@ -155,6 +241,12 @@ impl LocalCopyEngine {
                         &mut stats,
                     )?;
                 }
+                report_completed_entry(
+                    &mut progress,
+                    &mut completed_entries,
+                    total_entries,
+                    relative,
+                );
             }
         }
 
@@ -362,6 +454,62 @@ impl LocalCopyEngine {
             errors,
         })
     }
+}
+
+fn emit_plan_progress<F>(progress: &mut Option<F>, event: PlanProgressEvent)
+where
+    F: FnMut(&PlanProgressEvent),
+{
+    if let Some(progress) = progress {
+        progress(&event);
+    }
+}
+
+fn report_completed_entry<F>(
+    progress: &mut Option<F>,
+    completed_entries: &mut u64,
+    total_entries: Option<u64>,
+    relative: &Path,
+) where
+    F: FnMut(&PlanProgressEvent),
+{
+    let Some(total_entries) = total_entries else {
+        return;
+    };
+    *completed_entries += 1;
+    emit_plan_progress(
+        progress,
+        PlanProgressEvent {
+            phase: PlanProgressPhase::Planning,
+            completed_entries: *completed_entries,
+            total_entries: Some(total_entries),
+            relative_path: Some(relative.to_owned()),
+        },
+    );
+}
+
+fn should_visit(
+    entry: &walkdir::DirEntry,
+    source: &Path,
+    rule: &CopyRule,
+    matcher: &ExclusionMatcher,
+) -> bool {
+    if entry.path() == source {
+        return true;
+    }
+    entry
+        .path()
+        .strip_prefix(source)
+        .map(|relative| {
+            let visible = rule.filters.include_hidden || !is_hidden(relative);
+            visible
+                && if entry.file_type().is_dir() {
+                    matcher.should_descend(relative)
+                } else {
+                    !matcher.is_excluded(relative)
+                }
+        })
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -611,6 +759,37 @@ mod tests {
             fs::read(destination.join("cache/keep/copy.txt")).unwrap(),
             b"copy"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn planning_reports_discovery_and_determinate_progress() {
+        let root = temp_root("plan-progress");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("one.txt"), b"one").unwrap();
+        fs::write(source.join("nested/two.txt"), b"two").unwrap();
+        let rule = rule(source, destination);
+        let mut events = Vec::new();
+
+        let plan = LocalCopyEngine
+            .plan_with_progress(&rule, |event| events.push(event.clone()))
+            .unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 2);
+        assert_eq!(events.first().unwrap().phase, PlanProgressPhase::Scanning);
+        assert_eq!(events.first().unwrap().completed_entries, 0);
+        assert_eq!(events.first().unwrap().total_entries, None);
+        let planning = events
+            .iter()
+            .filter(|event| event.phase == PlanProgressPhase::Planning)
+            .collect::<Vec<_>>();
+        assert_eq!(planning.first().unwrap().completed_entries, 0);
+        assert_eq!(planning.first().unwrap().total_entries, Some(3));
+        assert_eq!(planning.last().unwrap().completed_entries, 3);
+        assert_eq!(planning.last().unwrap().total_entries, Some(3));
         fs::remove_dir_all(root).unwrap();
     }
 

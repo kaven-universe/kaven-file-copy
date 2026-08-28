@@ -10,6 +10,23 @@ export interface PathExclusionState {
   included: string[];
 }
 
+export type SourceEntryTypeFilter = "all" | "folders" | "files";
+export type SourceView = "list" | "tree";
+
+export function filterSourceEntries(
+  entries: SourceEntry[],
+  type: SourceEntryTypeFilter,
+  query: string,
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return entries.filter((entry) => {
+    if (type === "folders" && !entry.directory) return false;
+    if (type === "files" && entry.directory) return false;
+    return !normalizedQuery
+      || normalizeTreePath(entry.relativePath).toLocaleLowerCase().includes(normalizedQuery);
+  });
+}
+
 export function buildSourceTree(entries: SourceEntry[]): SourceTreeNode[] {
   const roots: SourceTreeNode[] = [];
   const nodes = new Map<string, SourceTreeNode>();
@@ -72,12 +89,32 @@ export function normalizeTreePath(path: string) {
   return path.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
 }
 
-function isPathExcluded(path: string, excludedPaths: string[], includedPaths: string[]) {
-  const excludedDepth = deepestMatch(excludedPaths, path);
-  const includedDepth = deepestMatch(includedPaths, path);
+export function isPathExcluded(
+  path: string,
+  excludedPaths: Iterable<string>,
+  includedPaths: Iterable<string>,
+) {
+  const normalized = normalizeTreePath(path);
+  const excludedDepth = deepestMatch([...excludedPaths].map(normalizeTreePath), normalized);
+  const includedDepth = deepestMatch([...includedPaths].map(normalizeTreePath), normalized);
   if (excludedDepth === undefined) return false;
   if (includedDepth === undefined) return true;
   return excludedDepth > includedDepth;
+}
+
+export function hasPathDescendantOverride(
+  path: string,
+  excludedPaths: Iterable<string>,
+  includedPaths: Iterable<string>,
+) {
+  const normalized = normalizeTreePath(path);
+  const prefix = `${normalized}/`;
+  const overrides = isPathExcluded(normalized, excludedPaths, includedPaths)
+    ? includedPaths
+    : excludedPaths;
+  return [...overrides]
+    .map(normalizeTreePath)
+    .some((candidate) => candidate.startsWith(prefix));
 }
 
 function deepestMatch(paths: string[], target: string) {

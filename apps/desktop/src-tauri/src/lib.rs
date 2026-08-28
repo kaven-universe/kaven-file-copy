@@ -11,7 +11,10 @@ use std::{
 };
 
 use chrono::Utc;
-use kfc_core::{CopyPlan, CopyRule, JobSummary, PlanAction, ProgressEvent, TriggerConfig};
+use kfc_core::{
+    CopyPlan, CopyRule, JobSummary, PlanAction, PlanProgressEvent, PlanProgressPhase,
+    ProgressEvent, TriggerConfig,
+};
 use kfc_local_endpoint::LocalCopyEngine;
 use kfc_persistence::{FileRepositories, JobEvent, PersistenceError};
 use notify::{RecursiveMode, Watcher};
@@ -97,11 +100,27 @@ fn validate_rule(rule: CopyRule) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn preview_rule(rule: CopyRule) -> Result<CopyPlan, String> {
-    tauri::async_runtime::spawn_blocking(move || LocalCopyEngine.plan(&rule))
-        .await
-        .map_err(error)?
-        .map_err(error)
+async fn preview_rule(app: tauri::AppHandle, rule: CopyRule) -> Result<CopyPlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut last_emit = None::<Instant>;
+        let mut last_phase = None::<PlanProgressPhase>;
+        LocalCopyEngine.plan_with_progress(&rule, |event: &PlanProgressEvent| {
+            let phase_changed = last_phase != Some(event.phase);
+            let complete = event
+                .total_entries
+                .is_some_and(|total| event.completed_entries >= total);
+            let interval_elapsed =
+                last_emit.is_none_or(|instant| instant.elapsed() >= Duration::from_millis(50));
+            if phase_changed || complete || interval_elapsed {
+                let _ = app.emit("preview-progress", event);
+                last_emit = Some(Instant::now());
+                last_phase = Some(event.phase);
+            }
+        })
+    })
+    .await
+    .map_err(error)?
+    .map_err(error)
 }
 
 #[tauri::command]

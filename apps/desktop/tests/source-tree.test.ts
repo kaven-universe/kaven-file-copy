@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSourceTree, setPathExcluded } from "../src/source-tree";
+import {
+  buildSourceTree,
+  filterSourceEntries,
+  hasPathDescendantOverride,
+  isPathExcluded,
+  setPathExcluded,
+} from "../src/source-tree";
 
 test("buildSourceTree groups entries by every path segment", () => {
   const tree = buildSourceTree([
@@ -62,4 +68,26 @@ test("a deeper exclusion can override an included child", () => {
     excluded: ["cache", "cache/keep/private"],
     included: ["cache/keep"],
   });
+});
+
+test("source entries filter by path and file or folder type", () => {
+  const entries = [
+    { relativePath: "Photos", directory: true },
+    { relativePath: "Photos/Beach.JPG", directory: false },
+    { relativePath: "documents/report.txt", directory: false },
+  ];
+
+  assert.deepEqual(filterSourceEntries(entries, "all", " beach "), [entries[1]]);
+  assert.deepEqual(filterSourceEntries(entries, "folders", "PHO"), [entries[0]]);
+  assert.deepEqual(filterSourceEntries(entries, "files", "photos"), [entries[1]]);
+});
+
+test("list exclusion state matches parent and child overrides", () => {
+  const excluded = ["cache"];
+  const included = ["cache/keep"];
+
+  assert!(isPathExcluded("cache/drop.txt", excluded, included));
+  assert.equal(isPathExcluded("cache/keep/file.txt", excluded, included), false);
+  assert.equal(hasPathDescendantOverride("cache", excluded, included), true);
+  assert.equal(hasPathDescendantOverride("cache/keep", excluded, included), false);
 });
