@@ -52,3 +52,4 @@ export interface JobEvent {
   operation: string; result: string; message?: string;
 }
 export interface SourceEntry { relativePath: string; directory: boolean }
+export interface RecentPaths { sources: string[]; destinations: string[] }

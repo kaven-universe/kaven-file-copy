@@ -6,7 +6,7 @@ import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "./api/tauri";
 import SourceTreeNode from "./SourceTreeNode.vue";
 import { buildSourceTree } from "./source-tree";
-import type { CopyPlan, CopyRule, JobEvent, JobSummary, ProgressEvent, SourceEntry } from "./types/generated";
+import type { CopyPlan, CopyRule, JobEvent, JobSummary, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
 
 type View = "rules" | "editor" | "jobs";
 const view = ref<View>("rules");
@@ -15,6 +15,7 @@ const jobs = ref<JobSummary[]>([]);
 const selectedRule = ref<CopyRule | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
+const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
 const busy = ref(false);
 const message = ref("");
 const progress = ref<ProgressEvent | null>(null);
@@ -36,6 +37,25 @@ function newRule(): CopyRule {
 
 async function refresh() {
   [rules.value, jobs.value] = await Promise.all([api.listRules(), api.listJobs()]);
+  try {
+    recentPaths.value = await api.getRecentPaths();
+  } catch (error) {
+    message.value = `Could not load recent paths: ${String(error)}`;
+  }
+}
+
+async function rememberRecentPath(kind: "source" | "destination", path: string) {
+  if (!path.trim()) return;
+  try {
+    recentPaths.value = await api.rememberRecentPath(kind, path);
+  } catch (error) {
+    message.value = `Could not update recent paths: ${String(error)}`;
+  }
+}
+
+async function rememberRulePaths(rule: CopyRule) {
+  await rememberRecentPath("source", rule.source.path);
+  await rememberRecentPath("destination", rule.destination.path);
 }
 
 function edit(rule?: CopyRule) {
@@ -47,11 +67,14 @@ function edit(rule?: CopyRule) {
 }
 
 async function choosePath(kind: "source" | "destination", directory: boolean) {
-  const value = await open({ directory, multiple: false });
-  if (value && selectedRule.value) {
-    selectedRule.value[kind].path = value;
-    if (kind === "source") sourceEntries.value = [];
-  }
+  await act(async () => {
+    const value = await open({ directory, multiple: false });
+    if (value && selectedRule.value) {
+      selectedRule.value[kind].path = value;
+      if (kind === "source") sourceEntries.value = [];
+      await rememberRecentPath(kind, value);
+    }
+  });
 }
 
 function changeTrigger(event: Event) {
@@ -84,12 +107,21 @@ function addGlob() {
 
 async function persist() {
   if (!selectedRule.value) return;
-  await act(async () => { await api.validateRule(selectedRule.value!); await api.saveRule(selectedRule.value!); await refresh(); view.value = "rules"; });
+  await act(async () => {
+    await api.validateRule(selectedRule.value!);
+    await api.saveRule(selectedRule.value!);
+    await rememberRulePaths(selectedRule.value!);
+    await refresh();
+    view.value = "rules";
+  });
 }
 
 async function preview() {
   if (!selectedRule.value) return;
-  await act(async () => { plan.value = await api.previewRule(selectedRule.value!); });
+  await act(async () => {
+    plan.value = await api.previewRule(selectedRule.value!);
+    await rememberRulePaths(selectedRule.value!);
+  });
 }
 
 async function previewSavedRule(rule: CopyRule) {
@@ -101,6 +133,7 @@ async function run(rule: CopyRule) {
   progress.value = null;
   view.value = "jobs";
   await act(async () => {
+    await rememberRulePaths(rule);
     const summary = await api.executeRule(structuredClone(toRaw(rule)));
     jobs.value = [summary, ...jobs.value.filter((job) => job.jobId !== summary.jobId)];
     progress.value = null;
@@ -189,8 +222,8 @@ onMounted(async () => {
       <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="view='rules'">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
       <section class="card form-grid">
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
-        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" @change="sourceEntries = []" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div></label>
-        <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" /><button @click="choosePath('destination', true)">Browse</button></div></label>
+        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="sourceEntries = []" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
+        <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" list="recent-destination-paths" autocomplete="off" /><button @click="choosePath('destination', true)">Browse</button></div><datalist id="recent-destination-paths"><option v-for="path in recentPaths.destinations" :key="path" :value="path"></option></datalist></label>
         <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
         <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
         <label>Trigger<select :value="selectedRule.trigger.type" @change="changeTrigger"><option value="manual">Manual</option><option value="watch">Watch changes</option><option value="interval">Fixed interval</option><option value="cron">Cron</option></select></label>

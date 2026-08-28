@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,11 +13,13 @@ use std::{
 use chrono::Utc;
 use kfc_core::{CopyPlan, CopyRule, JobSummary, PlanAction, ProgressEvent, TriggerConfig};
 use kfc_local_endpoint::LocalCopyEngine;
-use kfc_persistence::{FileRepositories, JobEvent};
+use kfc_persistence::{FileRepositories, JobEvent, PersistenceError};
 use notify::{RecursiveMode, Watcher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use walkdir::WalkDir;
+
+const RECENT_PATH_LIMIT: usize = 10;
 
 struct AppState {
     repositories: FileRepositories,
@@ -32,9 +34,50 @@ struct SourceEntry {
     directory: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentPaths {
+    #[serde(default)]
+    sources: Vec<PathBuf>,
+    #[serde(default)]
+    destinations: Vec<PathBuf>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum RecentPathKind {
+    Source,
+    Destination,
+}
+
 #[tauri::command]
 fn list_rules(state: State<'_, AppState>) -> Result<Vec<CopyRule>, String> {
     state.repositories.list_rules().map_err(error)
+}
+
+#[tauri::command]
+fn get_recent_paths(state: State<'_, AppState>) -> Result<RecentPaths, String> {
+    load_recent_paths(&state.repositories)
+}
+
+#[tauri::command]
+fn remember_recent_path(
+    state: State<'_, AppState>,
+    kind: RecentPathKind,
+    path: String,
+) -> Result<RecentPaths, String> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("recent path must not be empty".into());
+    }
+    let mut recent = load_recent_paths(&state.repositories)?;
+    let paths = match kind {
+        RecentPathKind::Source => &mut recent.sources,
+        RecentPathKind::Destination => &mut recent.destinations,
+    };
+    push_recent_path(paths, path);
+    state.repositories.save_settings(&recent).map_err(error)?;
+    Ok(recent)
 }
 
 #[tauri::command]
@@ -218,6 +261,35 @@ fn list_source_entries(rule: CopyRule) -> Result<Vec<SourceEntry>, String> {
         });
     }
     Ok(entries)
+}
+
+fn load_recent_paths(repositories: &FileRepositories) -> Result<RecentPaths, String> {
+    match repositories.load_settings() {
+        Ok(recent) => Ok(recent),
+        Err(PersistenceError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(RecentPaths::default())
+        }
+        Err(failure) => Err(error(failure)),
+    }
+}
+
+fn push_recent_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    paths.retain(|existing| !same_recent_path(existing, &path));
+    paths.insert(0, path);
+    paths.truncate(RECENT_PATH_LIMIT);
+}
+
+#[cfg(windows)]
+fn same_recent_path(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn same_recent_path(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 fn error(value: impl std::fmt::Display) -> String {
@@ -431,6 +503,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_rules,
+            get_recent_paths,
+            remember_recent_path,
             save_rule,
             delete_rule,
             validate_rule,
@@ -443,4 +517,50 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Kaven File Copy");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_paths_are_newest_first_deduplicated_and_bounded() {
+        let mut paths = Vec::new();
+        push_recent_path(&mut paths, PathBuf::from("first"));
+        push_recent_path(&mut paths, PathBuf::from("second"));
+        push_recent_path(&mut paths, PathBuf::from("first"));
+        assert_eq!(paths, vec![PathBuf::from("first"), PathBuf::from("second")]);
+
+        for index in 0..RECENT_PATH_LIMIT + 2 {
+            push_recent_path(&mut paths, PathBuf::from(format!("path-{index}")));
+        }
+        assert_eq!(paths.len(), RECENT_PATH_LIMIT);
+        assert_eq!(paths.first(), Some(&PathBuf::from("path-11")));
+        assert_eq!(paths.last(), Some(&PathBuf::from("path-2")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recent_paths_are_case_insensitive_on_windows() {
+        let mut paths = vec![PathBuf::from(r"C:\Work\Source")];
+        push_recent_path(&mut paths, PathBuf::from(r"c:\work\source"));
+        assert_eq!(paths, vec![PathBuf::from(r"c:\work\source")]);
+    }
+
+    #[test]
+    fn recent_paths_round_trip_through_settings_repository() {
+        let root = std::env::temp_dir().join(format!("kfc-recent-test-{}", uuid::Uuid::new_v4()));
+        let repositories = FileRepositories::new(&root);
+        let recent = RecentPaths {
+            sources: vec![PathBuf::from("source")],
+            destinations: vec![PathBuf::from("destination")],
+        };
+        repositories.save_settings(&recent).unwrap();
+
+        let loaded = load_recent_paths(&repositories).unwrap();
+
+        assert_eq!(loaded.sources, recent.sources);
+        assert_eq!(loaded.destinations, recent.destinations);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
