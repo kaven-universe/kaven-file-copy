@@ -5,7 +5,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "./api/tauri";
 import SourceTreeNode from "./SourceTreeNode.vue";
-import { buildSourceTree } from "./source-tree";
+import { buildSourceTree, normalizeTreePath, setPathExcluded } from "./source-tree";
 import type { CopyPlan, CopyRule, JobEvent, JobSummary, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
 
 type View = "rules" | "editor" | "jobs";
@@ -21,7 +21,10 @@ const message = ref("");
 const progress = ref<ProgressEvent | null>(null);
 const jobEvents = ref<Record<string, JobEvent[]>>({});
 const pathExclusions = computed(() => new Set(
-  selectedRule.value?.filters.exclude.filter((item) => item.kind === "path").map((item) => item.value) ?? [],
+  selectedRule.value?.filters.exclude.filter((item) => item.kind === "path").map((item) => normalizeTreePath(item.value)) ?? [],
+));
+const pathInclusions = computed(() => new Set(
+  selectedRule.value?.filters.include.map(normalizeTreePath) ?? [],
 ));
 const sourceTree = computed(() => buildSourceTree(sourceEntries.value));
 
@@ -29,7 +32,7 @@ function newRule(): CopyRule {
   return {
     schemaVersion: 1, id: crypto.randomUUID(), name: "New copy rule", enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
-    filters: { exclude: [], includeHidden: true },
+    filters: { exclude: [], include: [], includeHidden: true },
     copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2 },
     trigger: { type: "manual" },
   };
@@ -59,7 +62,9 @@ async function rememberRulePaths(rule: CopyRule) {
 }
 
 function edit(rule?: CopyRule) {
-  selectedRule.value = reactive(structuredClone(rule ? toRaw(rule) : newRule()));
+  const copy = structuredClone(rule ? toRaw(rule) : newRule());
+  copy.filters.include ??= [];
+  selectedRule.value = reactive(copy);
   sourceEntries.value = [];
   plan.value = null;
   message.value = "";
@@ -93,12 +98,18 @@ async function browseSource() {
 
 function toggleExcluded(path: string, checked: boolean) {
   if (!selectedRule.value) return;
-  const descendantPrefix = `${path}/`;
-  selectedRule.value.filters.exclude = selectedRule.value.filters.exclude.filter((item) => !(
-    item.kind === "path"
-    && (item.value === path || (checked && item.value.startsWith(descendantPrefix)))
-  ));
-  if (checked) selectedRule.value.filters.exclude.push({ kind: "path", value: path });
+  const globExclusions = selectedRule.value.filters.exclude.filter((item) => item.kind === "glob");
+  const state = setPathExcluded(
+    [...pathExclusions.value],
+    selectedRule.value.filters.include,
+    path,
+    checked,
+  );
+  selectedRule.value.filters.exclude = [
+    ...globExclusions,
+    ...state.excluded.map((value) => ({ kind: "path" as const, value })),
+  ];
+  selectedRule.value.filters.include = state.included;
 }
 
 function addGlob() {
@@ -245,6 +256,7 @@ onMounted(async () => {
             :key="node.relativePath"
             :node="node"
             :excluded-paths="pathExclusions"
+            :included-paths="pathInclusions"
             @toggle-excluded="toggleExcluded"
           />
         </ul>

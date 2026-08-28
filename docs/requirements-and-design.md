@@ -43,7 +43,8 @@ V1 transfers files only on the local machine. The core model must not depend on 
 - **One-way incremental copy:** scan the source and copy only files that do not exist at the destination or are considered changed.
 - **Automatic synchronization:** watch the source, coalesce repeated events, and initiate an incremental scan. Watch events are only triggers; scan results remain authoritative to avoid missed changes.
 - **Scheduled synchronization:** initiate an incremental scan at a fixed interval or according to a cron expression.
-- **Exclusion:** a normalized path relative to the source root or a glob expression. Excluding a directory also excludes all descendants.
+- **Exclusion:** a normalized path relative to the source root or a glob expression. Excluding a directory excludes its descendants unless a more specific inclusion override applies.
+- **Inclusion override:** a normalized relative path that re-includes a child of an excluded path. The deepest matching path rule wins.
 - **Dry run:** generate an execution plan and statistics without modifying the destination.
 
 In V1, “synchronization” means safe one-way incremental copy. It does not mean bidirectional synchronization or mirror deletion.
@@ -60,7 +61,7 @@ Acceptance criteria:
 - The source and destination must exist and be accessible, and they cannot be the same directory.
 - The destination cannot be inside the source directory because that would cause recursive copying.
 - A rule name is required. Rule IDs use UUIDs and do not depend on names.
-- The UI stores selected exclusions as paths relative to the source root and previews their matches.
+- The UI stores exclusions and child inclusion overrides as paths relative to the source root and previews their matches.
 - Editing a rule does not silently alter a running job. A job uses an immutable rule snapshot captured at startup.
 
 ### 4.2 Export, Import, and CLI
@@ -254,6 +255,7 @@ apps/desktop/src/
       { "kind": "path", "value": "cache" },
       { "kind": "glob", "value": "**/*.tmp" }
     ],
+    "include": ["cache/keep"],
     "includeHidden": true
   },
   "copy": {
@@ -305,13 +307,13 @@ Each job stores an immutable rule snapshot, trigger reason, and statistics. Afte
 1. Validate the rule and endpoint availability.
 2. Normalize source and destination roots and check for recursion or root escape.
 3. Stream a depth-first or breadth-first scan of the source.
-4. Apply exclusions before entering a directory to prune work early.
+4. Apply exclusions before entering a directory, but continue toward any more-specific inclusion override.
 5. Query destination metadata and generate `CreateDir`, `CopyFile`, `Skip`, or `Warn` operations according to the comparison policy.
 6. Stop here for a dry run; otherwise execute the plan in dependency order.
 7. Write each file to a same-directory temporary file, verify its size and optional hash, and commit it.
 8. Persist aggregate success, skipped, failed, byte-count, and duration statistics.
 
-Exclusion rules always use `/` as the separator. Platform paths are converted at the adapter boundary. A `path` exclusion matches that relative path and, for a directory, all descendants. Glob syntax is documented and the UI previews the match count.
+Exclusion and inclusion paths always use `/` as the separator. Platform paths are converted at the adapter boundary. A `path` exclusion matches that relative path and its descendants. A more-specific inclusion path re-enables its subtree, and an even deeper exclusion can disable part of that subtree again. Glob exclusions apply when no path override matches. The UI represents mixed subtrees with an indeterminate parent checkbox.
 
 ## 10. UI Information Architecture
 

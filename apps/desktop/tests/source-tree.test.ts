@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSourceTree } from "../src/source-tree";
+import { buildSourceTree, setPathExcluded } from "../src/source-tree";
 
 test("buildSourceTree groups entries by every path segment", () => {
   const tree = buildSourceTree([
@@ -28,4 +28,38 @@ test("buildSourceTree normalizes separators and sorts directories before files",
   assert.equal(tree[0].name, "folder");
   assert.equal(tree[0].directory, true);
   assert.equal(tree[0].children[0].relativePath, "folder/child.txt");
+});
+
+test("a child can override an excluded parent and be checked again", () => {
+  const parentExcluded = setPathExcluded([], [], "cache", true);
+  assert.deepEqual(parentExcluded, { excluded: ["cache"], included: [] });
+
+  const childIncluded = setPathExcluded(
+    parentExcluded.excluded,
+    parentExcluded.included,
+    "cache/keep",
+    false,
+  );
+  assert.deepEqual(childIncluded, { excluded: ["cache"], included: ["cache/keep"] });
+
+  const childExcludedAgain = setPathExcluded(
+    childIncluded.excluded,
+    childIncluded.included,
+    "cache/keep",
+    true,
+  );
+  assert.deepEqual(childExcludedAgain, { excluded: ["cache"], included: [] });
+});
+
+test("a deeper exclusion can override an included child", () => {
+  const state = setPathExcluded(
+    ["cache"],
+    ["cache/keep"],
+    "cache/keep/private",
+    true,
+  );
+  assert.deepEqual(state, {
+    excluded: ["cache", "cache/keep/private"],
+    included: ["cache/keep"],
+  });
 });

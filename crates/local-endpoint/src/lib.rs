@@ -31,7 +31,7 @@ pub struct LocalCopyEngine;
 impl LocalCopyEngine {
     pub fn validate_rule(&self, rule: &CopyRule) -> Result<ValidatedPaths> {
         rule.validate_structure()?;
-        ExclusionMatcher::new(&rule.filters.exclude)?;
+        ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
 
         let source = rule.source.path();
         let destination = rule.destination.path();
@@ -64,7 +64,7 @@ impl LocalCopyEngine {
 
     pub fn plan(&self, rule: &CopyRule) -> Result<CopyPlan> {
         let paths = self.validate_rule(rule)?;
-        let matcher = ExclusionMatcher::new(&rule.filters.exclude)?;
+        let matcher = ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
         let plan_source_root;
@@ -78,14 +78,19 @@ impl LocalCopyEngine {
                 .parent()
                 .ok_or_else(|| KfcError::PathEscape(paths.source.display().to_string()))?
                 .to_owned();
-            self.plan_file(
-                rule,
-                &paths.source,
-                Path::new(name),
-                &paths.destination,
-                &mut items,
-                &mut stats,
-            )?;
+            let relative = Path::new(name);
+            if !matcher.is_excluded(relative)
+                && (rule.filters.include_hidden || !is_hidden(relative))
+            {
+                self.plan_file(
+                    rule,
+                    &paths.source,
+                    relative,
+                    &paths.destination,
+                    &mut items,
+                    &mut stats,
+                )?;
+            }
         } else {
             plan_source_root = paths.source.clone();
             let walker = WalkDir::new(&paths.source).follow_links(false).into_iter();
@@ -97,8 +102,13 @@ impl LocalCopyEngine {
                     .path()
                     .strip_prefix(&paths.source)
                     .map(|relative| {
-                        !matcher.is_excluded(relative)
-                            && (rule.filters.include_hidden || !is_hidden(relative))
+                        let visible = rule.filters.include_hidden || !is_hidden(relative);
+                        visible
+                            && if entry.file_type().is_dir() {
+                                matcher.should_descend(relative)
+                            } else {
+                                !matcher.is_excluded(relative)
+                            }
                     })
                     .unwrap_or(false)
             }) {
@@ -112,6 +122,9 @@ impl LocalCopyEngine {
                     .path()
                     .strip_prefix(&paths.source)
                     .map_err(|_| KfcError::PathEscape(entry.path().display().to_string()))?;
+                if matcher.is_excluded(relative) {
+                    continue;
+                }
                 let file_type = entry.file_type();
                 if file_type.is_symlink() {
                     stats.warnings += 1;
@@ -568,6 +581,36 @@ mod tests {
         });
         let plan = LocalCopyEngine.plan(&rule).unwrap();
         assert_eq!(plan.stats.files_to_copy, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn included_child_is_scanned_under_excluded_parent() {
+        let root = temp_root("include-child");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("cache/keep")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("cache/drop.txt"), b"drop").unwrap();
+        fs::write(source.join("cache/keep/copy.txt"), b"copy").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.exclude.push(Exclusion::Path {
+            value: "cache".into(),
+        });
+        rule.filters.include.push("cache/keep".into());
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 1);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(!destination.join("cache/drop.txt").exists());
+        assert_eq!(
+            fs::read(destination.join("cache/keep/copy.txt")).unwrap(),
+            b"copy"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

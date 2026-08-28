@@ -11,7 +11,7 @@ The V1 design is not complete. The manual local-copy workflow and its shared Rus
 
 - The complete desktop development application starts with `cd apps/desktop` followed by `npm run dev`. The internal `dev:web` script starts only Vite and does not provide Tauri IPC.
 - The desktop UI can create, edit, duplicate, enable/disable, delete, import, export, preview, and manually execute rules. Duplicate import IDs require an overwrite-or-copy decision.
-- Native source/destination dialogs, source-tree path exclusions, glob exclusions, job progress, cancellation, history, and basic event details are connected to Tauri commands.
+- Native source/destination dialogs, hierarchical path exclusions with child inclusion overrides, glob exclusions, job progress, cancellation, history, and basic event details are connected to Tauri commands.
 - The local engine validates source/destination relationships, scans files and directories, applies exclusions, plans incremental work, bounds concurrency, retries failures, preserves modification times, and uses destination-side temporary files.
 - Execution rejects lexical path traversal and existing destination links or junctions that resolve outside the destination root.
 - Rule JSON is strictly deserialized according to required V1 fields, rejects unknown fields, and enforces the published concurrency and retry limits.

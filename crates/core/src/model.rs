@@ -100,6 +100,8 @@ impl EndpointConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilterConfig {
     pub exclude: Vec<Exclusion>,
+    #[serde(default)]
+    pub include: Vec<String>,
     pub include_hidden: bool,
 }
 
@@ -310,6 +312,14 @@ mod tests {
             .unwrap()
             .insert("unexpected".into(), serde_json::Value::Bool(true));
         assert!(serde_json::from_value::<CopyRule>(value).is_err());
+    }
+
+    #[test]
+    fn v1_deserialization_defaults_missing_include_overrides() {
+        let mut value = serde_json::to_value(test_rule()).unwrap();
+        value["filters"].as_object_mut().unwrap().remove("include");
+        let rule = serde_json::from_value::<CopyRule>(value).unwrap();
+        assert!(rule.filters.include.is_empty());
     }
 
     #[test]

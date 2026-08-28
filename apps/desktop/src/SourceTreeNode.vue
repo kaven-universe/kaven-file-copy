@@ -5,6 +5,7 @@ import type { SourceTreeNode } from "./source-tree";
 const props = withDefaults(defineProps<{
   node: SourceTreeNode;
   excludedPaths: ReadonlySet<string>;
+  includedPaths: ReadonlySet<string>;
   depth?: number;
   ancestorExcluded?: boolean;
 }>(), {
@@ -19,7 +20,17 @@ const emit = defineEmits<{
 const expanded = ref(false);
 const hasChildren = computed(() => props.node.directory && props.node.children.length > 0);
 const directlyExcluded = computed(() => props.excludedPaths.has(props.node.relativePath));
-const effectivelyExcluded = computed(() => props.ancestorExcluded || directlyExcluded.value);
+const directlyIncluded = computed(() => props.includedPaths.has(props.node.relativePath));
+const effectivelyExcluded = computed(() => {
+  if (directlyIncluded.value) return false;
+  if (directlyExcluded.value) return true;
+  return props.ancestorExcluded;
+});
+const hasDescendantOverride = computed(() => {
+  const prefix = `${props.node.relativePath}/`;
+  const overrides = effectivelyExcluded.value ? props.includedPaths : props.excludedPaths;
+  return [...overrides].some((path) => path.startsWith(prefix));
+});
 
 function toggleExpansion() {
   expanded.value = !expanded.value;
@@ -40,7 +51,7 @@ function forwardExclusion(path: string, checked: boolean) {
     role="treeitem"
     :aria-expanded="hasChildren ? expanded : undefined"
   >
-    <div class="source-tree-row" :class="{ inherited: ancestorExcluded }">
+    <div class="source-tree-row" :class="{ inherited: ancestorExcluded && !directlyIncluded && !directlyExcluded }">
       <button
         v-if="hasChildren"
         class="tree-toggle"
@@ -56,7 +67,7 @@ function forwardExclusion(path: string, checked: boolean) {
         class="tree-checkbox"
         type="checkbox"
         :checked="effectivelyExcluded"
-        :disabled="ancestorExcluded"
+        :indeterminate="hasDescendantOverride"
         :aria-label="`Exclude ${node.relativePath}`"
         @change="handleExclusion"
       />
@@ -70,6 +81,7 @@ function forwardExclusion(path: string, checked: boolean) {
         :key="child.relativePath"
         :node="child"
         :excluded-paths="excludedPaths"
+        :included-paths="includedPaths"
         :depth="depth + 1"
         :ancestor-excluded="effectivelyExcluded"
         @toggle-excluded="forwardExclusion"

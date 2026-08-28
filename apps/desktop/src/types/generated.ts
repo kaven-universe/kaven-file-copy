@@ -14,7 +14,7 @@ export interface CopyRule {
   enabled: boolean;
   source: EndpointConfig;
   destination: EndpointConfig;
-  filters: { exclude: Exclusion[]; includeHidden: boolean };
+  filters: { exclude: Exclusion[]; include: string[]; includeHidden: boolean };
   copy: {
     mode: "incremental";
     compare: "size-and-mtime" | "size-only";
