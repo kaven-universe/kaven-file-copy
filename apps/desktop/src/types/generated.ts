@@ -1,0 +1,54 @@
+// Contract mirror for schemaVersion 1. Replace with generated output once the schema generator is wired into CI.
+export type EndpointConfig = { type: "local"; path: string };
+export type Exclusion = { kind: "path" | "glob"; value: string };
+export type TriggerConfig =
+  | { type: "manual" }
+  | { type: "watch"; debounceMs: number }
+  | { type: "interval"; seconds: number }
+  | { type: "cron"; expression: string; timezone?: string };
+
+export interface CopyRule {
+  schemaVersion: 1;
+  id: string;
+  name: string;
+  enabled: boolean;
+  source: EndpointConfig;
+  destination: EndpointConfig;
+  filters: { exclude: Exclusion[]; includeHidden: boolean };
+  copy: {
+    mode: "incremental";
+    compare: "size-and-mtime" | "size-only";
+    overwrite: "if-changed" | "never" | "always";
+    symlinks: "skip";
+    preserveMtime: boolean;
+    maxConcurrency: number;
+    retryCount: number;
+  };
+  trigger: TriggerConfig;
+}
+
+export interface PlanStats {
+  directoriesToCreate: number;
+  filesToCopy: number;
+  filesToSkip: number;
+  warnings: number;
+  bytesToCopy: number;
+}
+
+export interface PlanItem { action: string; relativePath: string; size: number; reason: string }
+export interface CopyPlan { ruleId: string; items: PlanItem[]; stats: PlanStats }
+export interface JobSummary {
+  jobId: string; ruleId: string; startedAt: string; finishedAt: string;
+  status: "succeeded" | "partial" | "failed" | "cancelled";
+  copiedFiles: number; skippedFiles: number; failedFiles: number; copiedBytes: number;
+  errors: Array<{ relativePath: string; message: string }>;
+}
+export interface ProgressEvent {
+  jobId: string; relativePath: string; completedFiles: number; totalFiles: number;
+  copiedBytes: number; totalBytes: number;
+}
+export interface JobEvent {
+  timestamp: string; level: string; phase: string; relativePath?: string;
+  operation: string; result: string; message?: string;
+}
+export interface SourceEntry { relativePath: string; directory: boolean }

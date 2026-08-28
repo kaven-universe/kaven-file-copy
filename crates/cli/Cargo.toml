@@ -1,0 +1,25 @@
+[package]
+name = "kfc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kfc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+kfc-core = { path = "../core" }
+kfc-local-endpoint = { path = "../local-endpoint" }
+kfc-scheduler = { path = "../scheduler" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+

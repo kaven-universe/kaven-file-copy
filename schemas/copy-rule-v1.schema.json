@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kaven.local/schemas/copy-rule-v1.schema.json",
+  "title": "Kaven File Copy Rule V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "enabled", "source", "destination", "filters", "copy", "trigger"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "enabled": { "type": "boolean" },
+    "source": { "$ref": "#/$defs/localEndpoint" },
+    "destination": { "$ref": "#/$defs/localEndpoint" },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exclude", "includeHidden"],
+      "properties": {
+        "exclude": { "type": "array", "items": { "$ref": "#/$defs/exclusion" } },
+        "includeHidden": { "type": "boolean" }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "compare", "overwrite", "symlinks", "preserveMtime", "maxConcurrency", "retryCount"],
+      "properties": {
+        "mode": { "const": "incremental" },
+        "compare": { "enum": ["size-and-mtime", "size-only"] },
+        "overwrite": { "enum": ["if-changed", "never", "always"] },
+        "symlinks": { "const": "skip" },
+        "preserveMtime": { "type": "boolean" },
+        "maxConcurrency": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "retryCount": { "type": "integer", "minimum": 0, "maximum": 20 }
+      }
+    },
+    "trigger": { "$ref": "#/$defs/trigger" }
+  },
+  "$defs": {
+    "localEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": { "type": { "const": "local" }, "path": { "type": "string", "minLength": 1 } }
+    },
+    "exclusion": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "const": "path" }, "value": { "type": "string", "minLength": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "const": "glob" }, "value": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "trigger": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "manual" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "debounceMs"], "properties": { "type": { "const": "watch" }, "debounceMs": { "type": "integer", "minimum": 100 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "seconds"], "properties": { "type": { "const": "interval" }, "seconds": { "type": "integer", "minimum": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "expression"], "properties": { "type": { "const": "cron" }, "expression": { "type": "string", "minLength": 1 }, "timezone": { "type": "string" } } }
+      ]
+    }
+  }
+}

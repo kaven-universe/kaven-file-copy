@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Kaven File Copy">
+  <defs>
+    <linearGradient id="background" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4f7ff0"/>
+      <stop offset="1" stop-color="#2856c7"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="url(#background)"/>
+  <path d="M130 136c0-18 14-32 32-32h142l78 78v194c0 18-14 32-32 32H162c-18 0-32-14-32-32V136Z" fill="#fff" opacity=".96"/>
+  <path d="M304 104v62c0 18 14 32 32 32h46" fill="#dce6ff"/>
+  <path d="M186 270h120m0 0-42-42m42 42-42 42" fill="none" stroke="#356ae6" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M206 344h100" fill="none" stroke="#9ab4ef" stroke-width="22" stroke-linecap="round"/>
+</svg>
