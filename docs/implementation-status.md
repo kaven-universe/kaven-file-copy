@@ -11,12 +11,12 @@ The V1 design is not complete. The manual local-copy workflow and its shared Rus
 
 - The complete desktop development application starts with `cd apps/desktop` followed by `npm run dev`. The internal `dev:web` script starts only Vite and does not provide Tauri IPC.
 - The desktop UI can create, edit, duplicate, enable/disable, delete, import, export, preview, and manually execute rules. Duplicate import IDs require an overwrite-or-copy decision.
-- Native source/destination dialogs, hierarchical path exclusions with child inclusion overrides, glob exclusions, job progress, cancellation, history, and basic event details are connected to Tauri commands.
-- The local engine validates source/destination relationships, scans files and directories, applies exclusions, plans incremental work, bounds concurrency, retries failures, preserves modification times, and uses destination-side temporary files.
+- Native source/destination dialogs, positive-selection file picker with tri-state deselection overrides, job progress, cancellation, history, and basic event details are connected to Tauri commands.
+- The local engine validates source/destination relationships, scans files and directories, applies the file selection, plans incremental work, bounds concurrency, retries failures, preserves modification times, and uses destination-side temporary files.
 - Execution rejects lexical path traversal and existing destination links or junctions that resolve outside the destination root.
 - Rule JSON is strictly deserialized according to required V1 fields, rejects unknown fields, and enforces the published concurrency and retry limits.
 - File repositories persist rules, summaries, and JSON Lines events. A malformed rule or summary is skipped with a warning instead of hiding all healthy records.
-- The CLI validates, previews, and executes exported rules; its end-to-end test performs a real copy and verifies exclusions. Watch cancellation is checked even when no file event arrives.
+- The CLI validates, previews, and executes exported rules; its end-to-end test performs a real copy and verifies the selection. Watch cancellation is checked even when no file event arrives.
 - The in-process desktop scheduler supports baseline watch debounce, fixed intervals, and UTC cron triggers while the application remains open.
 - Deterministic application icons and generated platform assets are present.
 
@@ -31,7 +31,7 @@ The V1 design is not complete. The manual local-copy workflow and its shared Rus
 
 ## Partial or Missing Before V1
 
-- The source tree is capped at depth 12 and 5,000 entries, is not virtualized, and does not show a dedicated exclusion match count.
+- The source tree is capped at depth 12 and 5,000 entries, is not virtualized, and does not show a dedicated selection match count.
 - Job events do not yet contain every designed field such as trigger reason, scheduled time, duration, byte count, and complete error chains. Detail filtering, diagnostic redaction, size-based rotation, and configurable retention are missing.
 - Watch overflow, sleep/wake recovery, unavailable-directory recovery, durable skipped-trigger records, and per-rule last/next-run display are missing. Cron timezone configuration is accepted by the model but not applied by the scheduler.
 - Abnormal-exit recovery does not mark interrupted jobs, and desktop/background-process ownership locking is not implemented.

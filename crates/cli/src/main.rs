@@ -242,8 +242,7 @@ fn error_exit_code(failure: &anyhow::Error) -> u8 {
             kfc_core::KfcError::InvalidRule(_)
             | kfc_core::KfcError::UnsupportedSchema { .. }
             | kfc_core::KfcError::PathEscape(_)
-            | kfc_core::KfcError::UnsafeRelationship(_)
-            | kfc_core::KfcError::InvalidPattern { .. } => 2,
+            | kfc_core::KfcError::UnsafeRelationship(_) => 2,
             kfc_core::KfcError::Io { .. } => 3,
             kfc_core::KfcError::Cancelled => 4,
         };

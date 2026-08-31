@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
-globset.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

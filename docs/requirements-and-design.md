@@ -6,7 +6,7 @@ Target platforms: Windows, macOS, and Linux
 
 ## 1. Background and Goals
 
-Build a cross-platform file copy application with both a desktop UI and a CLI. Users can create reusable copy rules, choose files or directories to exclude, run jobs manually, automatically, or on a schedule, and inspect detailed execution records.
+Build a cross-platform file copy application with both a desktop UI and a CLI. Users can create reusable copy rules, choose the files or directories to copy, run jobs manually, automatically, or on a schedule, and inspect detailed execution records.
 
 V1 transfers files only on the local machine. The core model must not depend on local paths so that LAN, SSH/SFTP, object storage, or a custom device protocol can be added later without redesigning the copy engine.
 
@@ -16,7 +16,7 @@ V1 transfers files only on the local machine. The core model must not depend on 
 
 1. Create, edit, duplicate, enable, disable, and delete copy rules.
 2. Select source files/directories and destination directories with native system pickers.
-3. Browse the source tree in the UI and select child files or directories to exclude; manually entered glob patterns must also be supported.
+3. Browse the source tree in the UI and check the files and folders to copy, with tri-state child deselection.
 4. Persist rules and support exporting and importing them.
 5. Provide a CLI that validates, previews, and executes rules exported by the UI.
 6. Support manual copy, automatic synchronization after detecting source changes, and interval- or cron-based scheduled synchronization.
@@ -39,12 +39,12 @@ V1 transfers files only on the local machine. The core model must not depend on 
 
 ## 3. Terminology and Behavior
 
-- **Copy rule (Rule):** reusable configuration containing the source, destination, exclusions, comparison policy, and trigger policy.
+- **Copy rule (Rule):** reusable configuration containing the source, destination, file selection, comparison policy, and trigger policy.
 - **One-way incremental copy:** scan the source and copy only files that do not exist at the destination or are considered changed.
 - **Automatic synchronization:** watch the source, coalesce repeated events, and initiate an incremental scan. Watch events are only triggers; scan results remain authoritative to avoid missed changes.
 - **Scheduled synchronization:** initiate an incremental scan at a fixed interval or according to a cron expression.
-- **Exclusion:** a normalized path relative to the source root or a glob expression. Excluding a directory excludes its descendants unless a more specific inclusion override applies.
-- **Inclusion override:** a normalized relative path that re-includes a child of an excluded path. The deepest matching path rule wins.
+- **Selection:** a normalized path relative to the source root. Selecting a directory selects its descendants; the deepest matching path rule wins. An empty selection copies nothing.
+- **Deselection override:** a normalized relative path that un-selects a child of a selected path.
 - **Dry run:** generate an execution plan and statistics without modifying the destination.
 
 In V1, “synchronization” means safe one-way incremental copy. It does not mean bidirectional synchronization or mirror deletion.
@@ -53,7 +53,7 @@ In V1, “synchronization” means safe one-way incremental copy. It does not me
 
 ### 4.1 Rule Management
 
-As a user, I can select a source and destination, choose exclusions, and save the rule for repeated use.
+As a user, I can select a source and destination, choose the files to copy, and save the rule for repeated use.
 
 Acceptance criteria:
 
@@ -61,7 +61,7 @@ Acceptance criteria:
 - The source and destination must exist and be accessible, and they cannot be the same directory.
 - The destination cannot be inside the source directory because that would cause recursive copying.
 - A rule name is required. Rule IDs use UUIDs and do not depend on names.
-- The UI stores exclusions and child inclusion overrides as paths relative to the source root and previews their matches.
+- The UI stores the selection and its deselection overrides as paths relative to the source root and previews their matches.
 - Editing a rule does not silently alter a running job. A job uses an immutable rule snapshot captured at startup.
 
 ### 4.2 Export, Import, and CLI
@@ -125,7 +125,7 @@ Acceptance criteria:
 ### 5.1 Safety and Reliability
 
 - Prevent recursive source/destination relationships, path traversal, and symbolic-link escapes.
-- Match exclusions only against normalized relative paths and reject any `..` path that escapes the source root.
+- Match the selection only against normalized relative paths and reject any `..` path that escapes the source root.
 - Do not follow directory symbolic links by default. The policy is `skip`, `copy-link`, or explicit `follow`; `follow` must detect cycles.
 - Detect source metadata changes between the start and end of a copy. Mark unstable files and retry them a limited number of times.
 - Cancellation is cooperative: stop scheduling new files, clean up temporary files from the current job, and keep completed files.
@@ -251,11 +251,8 @@ apps/desktop/src/
   "source": { "type": "local", "path": "D:/Photos" },
   "destination": { "type": "local", "path": "E:/Backup/Photos" },
   "filters": {
-    "exclude": [
-      { "kind": "path", "value": "cache" },
-      { "kind": "glob", "value": "**/*.tmp" }
-    ],
-    "include": ["cache/keep"],
+    "include": ["docs", "src/main.rs"],
+    "exclude": ["docs/drafts"],
     "includeHidden": true
   },
   "copy": {
@@ -307,13 +304,13 @@ Each job stores an immutable rule snapshot, trigger reason, and statistics. Afte
 1. Validate the rule and endpoint availability.
 2. Normalize source and destination roots and check for recursion or root escape.
 3. Stream a depth-first or breadth-first scan of the source.
-4. Apply exclusions before entering a directory, but continue toward any more-specific inclusion override.
+4. Apply the selection before entering a directory, but continue toward any deeper selection override.
 5. Query destination metadata and generate `CreateDir`, `CopyFile`, `Skip`, or `Warn` operations according to the comparison policy.
 6. Stop here for a dry run; otherwise execute the plan in dependency order.
 7. Write each file to a same-directory temporary file, verify its size and optional hash, and commit it.
 8. Persist aggregate success, skipped, failed, byte-count, and duration statistics.
 
-Exclusion and inclusion paths always use `/` as the separator. Platform paths are converted at the adapter boundary. A `path` exclusion matches that relative path and its descendants. A more-specific inclusion path re-enables its subtree, and an even deeper exclusion can disable part of that subtree again. Glob exclusions apply when no path override matches. The UI represents mixed subtrees with an indeterminate parent checkbox.
+Selection paths always use `/` as the separator. Platform paths are converted at the adapter boundary. An `include` path selects that relative path and its descendants. A more-specific `exclude` path deselects part of that subtree again, and an even deeper `include` can re-select a part of the deselected subtree. An empty `include` list copies nothing, so the UI presents "check the files you want to copy". The UI represents mixed subtrees with an indeterminate parent checkbox.
 
 ## 10. UI Information Architecture
 
@@ -325,7 +322,7 @@ Exclusion and inclusion paths always use `/` as the separator. Platform paths ar
 ### 10.2 Rule Editor
 
 - Basic information: name, source, and destination.
-- Exclusions: source tree selection, glob input, and match preview.
+- Files to copy: source tree/list selection with tri-state checkboxes and match preview.
 - Copy options: comparison, symbolic links, concurrency, and retries.
 - Trigger: manual, watch for changes, fixed interval, or cron.
 - Validation before save, with dry run as the primary confirmation mechanism.
@@ -391,10 +388,10 @@ SQLite is intentionally excluded from V1 to keep packaging, migrations, recovery
 
 ## 14. Test Strategy
 
-- **Unit tests:** rule migration/validation, glob matching, path normalization, state machine, comparison policies, and schedule calculation.
-- **Integration tests:** create, overwrite, exclusion, cancellation, retry, damaged temporary files, and permission errors in temporary directories.
+- **Unit tests:** rule migration/validation, path normalization, selection state machine, comparison policies, and schedule calculation.
+- **Integration tests:** create, overwrite, selection, cancellation, retry, damaged temporary files, and permission errors in temporary directories.
 - **Platform tests:** Windows long paths and file locks, macOS/Linux permissions and symbolic links, case sensitivity, and Unicode names.
-- **Property tests:** relative paths can never escape an endpoint root; descendants of an excluded directory never enter a plan.
+- **Property tests:** relative paths can never escape an endpoint root; descendants of a deselected directory never enter a plan.
 - **End-to-end tests:** create and export a rule in the UI, then dry-run and execute it in the CLI; verify identical results.
 - **Fault injection:** disk full, destination disappearance, source changes during copy, lost watcher events, and process interruption.
 

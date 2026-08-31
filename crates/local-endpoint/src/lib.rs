@@ -18,7 +18,7 @@ use std::{
 use chrono::Utc;
 use filetime::FileTime;
 use kfc_core::{
-    CompareStrategy, CopyPlan, CopyRule, ExclusionMatcher, FileError, IoResultExt, JobStatus,
+    CompareStrategy, CopyPlan, CopyRule, FileError, InclusionMatcher, IoResultExt, JobStatus,
     JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
     PlanProgressPhase, PlanStats, ProgressEvent, Result,
 };
@@ -32,7 +32,7 @@ pub struct LocalCopyEngine;
 impl LocalCopyEngine {
     pub fn validate_rule(&self, rule: &CopyRule) -> Result<ValidatedPaths> {
         rule.validate_structure()?;
-        ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
+        InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
 
         let source = rule.source.path();
         let destination = rule.destination.path();
@@ -79,7 +79,7 @@ impl LocalCopyEngine {
         F: FnMut(&PlanProgressEvent),
     {
         let paths = self.validate_rule(rule)?;
-        let matcher = ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
+        let matcher = InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
         let plan_source_root;
@@ -121,7 +121,7 @@ impl LocalCopyEngine {
                     relative_path: None,
                 },
             );
-            if !matcher.is_excluded(relative)
+            if (rule.filters.include.is_empty() || matcher.is_included(relative))
                 && (rule.filters.include_hidden || !is_hidden(relative))
             {
                 self.plan_file(
@@ -202,7 +202,7 @@ impl LocalCopyEngine {
                     .path()
                     .strip_prefix(&paths.source)
                     .map_err(|_| KfcError::PathEscape(entry.path().display().to_string()))?;
-                if matcher.is_excluded(relative) {
+                if !matcher.is_included(relative) {
                     report_completed_entry(
                         &mut progress,
                         &mut completed_entries,
@@ -492,7 +492,7 @@ fn should_visit(
     entry: &walkdir::DirEntry,
     source: &Path,
     rule: &CopyRule,
-    matcher: &ExclusionMatcher,
+    matcher: &InclusionMatcher,
 ) -> bool {
     if entry.path() == source {
         return true;
@@ -506,7 +506,7 @@ fn should_visit(
                 && if entry.file_type().is_dir() {
                     matcher.should_descend(relative)
                 } else {
-                    !matcher.is_excluded(relative)
+                    matcher.is_included(relative)
                 }
         })
         .unwrap_or(false)
@@ -640,7 +640,7 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{EndpointConfig, Exclusion, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{EndpointConfig, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
 
     #[cfg(unix)]
     fn create_directory_link(target: &Path, link: &Path) {
@@ -701,7 +701,8 @@ mod tests {
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("nested/file.txt"), b"hello").unwrap();
         let engine = LocalCopyEngine;
-        let rule = rule(source, destination.clone());
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("nested".into());
         let plan = engine.plan(&rule).unwrap();
         assert_eq!(plan.stats.files_to_copy, 1);
         let summary = engine
@@ -716,24 +717,47 @@ mod tests {
     }
 
     #[test]
-    fn excluded_directory_is_pruned() {
-        let root = temp_root("exclude");
+    fn nothing_is_copied_without_a_selection() {
+        let root = temp_root("no-selection");
         let source = root.join("source");
         let destination = root.join("destination");
         fs::create_dir_all(source.join("cache")).unwrap();
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("cache/ignored.txt"), b"ignored").unwrap();
-        let mut rule = rule(source, destination);
-        rule.filters.exclude.push(Exclusion::Path {
-            value: "cache".into(),
-        });
-        let plan = LocalCopyEngine.plan(&rule).unwrap();
+        let plan = LocalCopyEngine.plan(&rule(source, destination)).unwrap();
         assert_eq!(plan.stats.files_to_copy, 0);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn included_child_is_scanned_under_excluded_parent() {
+    fn deselected_child_is_pruned_under_selected_parent() {
+        let root = temp_root("selected");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("cache/keep")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("cache/drop.txt"), b"drop").unwrap();
+        fs::write(source.join("cache/keep/copy.txt"), b"copy").unwrap();
+        fs::write(source.join("hello.txt"), b"hello").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("cache".into());
+        rule.filters.exclude.push("cache/keep".into());
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 1);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("cache/drop.txt").exists());
+        assert!(!destination.join("cache/keep/copy.txt").exists());
+        assert!(!destination.join("hello.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn included_child_is_scanned_under_unselected_parent() {
         let root = temp_root("include-child");
         let source = root.join("source");
         let destination = root.join("destination");
@@ -742,9 +766,6 @@ mod tests {
         fs::write(source.join("cache/drop.txt"), b"drop").unwrap();
         fs::write(source.join("cache/keep/copy.txt"), b"copy").unwrap();
         let mut rule = rule(source, destination.clone());
-        rule.filters.exclude.push(Exclusion::Path {
-            value: "cache".into(),
-        });
         rule.filters.include.push("cache/keep".into());
         let engine = LocalCopyEngine;
         let plan = engine.plan(&rule).unwrap();
@@ -771,7 +792,9 @@ mod tests {
         fs::create_dir_all(&destination).unwrap();
         fs::write(source.join("one.txt"), b"one").unwrap();
         fs::write(source.join("nested/two.txt"), b"two").unwrap();
-        let rule = rule(source, destination);
+        let mut rule = rule(source, destination);
+        rule.filters.include.push("one.txt".into());
+        rule.filters.include.push("nested".into());
         let mut events = Vec::new();
 
         let plan = LocalCopyEngine
@@ -823,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_files_can_be_excluded() {
+    fn hidden_files_can_be_skipped() {
         let root = temp_root("hidden");
         let source = root.join("source");
         let destination = root.join("destination");
@@ -848,6 +871,9 @@ mod tests {
         }
         let mut rule = rule(source, destination.clone());
         rule.copy.max_concurrency = 4;
+        for index in 0..20 {
+            rule.filters.include.push(format!("{index}.txt"));
+        }
         let engine = LocalCopyEngine;
         let plan = engine.plan(&rule).unwrap();
         let summary = engine
@@ -890,7 +916,8 @@ mod tests {
         fs::create_dir_all(&destination).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(source.join("nested/file.txt"), b"do not escape").unwrap();
-        let rule = rule(source, destination.clone());
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("nested".into());
         let engine = LocalCopyEngine;
         let plan = engine.plan(&rule).unwrap();
         let link = destination.join("nested");

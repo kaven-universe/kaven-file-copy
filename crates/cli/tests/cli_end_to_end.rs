@@ -18,7 +18,8 @@ fn write_rule(root: &Path) -> std::path::PathBuf {
         "source": { "type": "local", "path": source },
         "destination": { "type": "local", "path": destination },
         "filters": {
-            "exclude": [{ "kind": "glob", "value": "**/*.tmp" }],
+            "include": ["hello.txt"],
+            "exclude": [],
             "includeHidden": true
         },
         "copy": {
