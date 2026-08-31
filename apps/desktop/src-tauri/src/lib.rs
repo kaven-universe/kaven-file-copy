@@ -35,6 +35,8 @@ struct AppState {
 struct SourceEntry {
     relative_path: String,
     directory: bool,
+    size: u64,
+    modified: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -274,9 +276,20 @@ fn list_source_entries(rule: CopyRule) -> Result<Vec<SourceEntry>, String> {
     {
         let entry = entry.map_err(error)?;
         let relative = entry.path().strip_prefix(&paths.source).map_err(error)?;
+        let metadata = entry.metadata().ok();
+        let modified = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64);
         entries.push(SourceEntry {
             relative_path: relative.to_string_lossy().replace('\\', "/"),
             directory: entry.file_type().is_dir(),
+            size: metadata
+                .as_ref()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+            modified,
         });
     }
     Ok(entries)
