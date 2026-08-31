@@ -20,7 +20,8 @@ use filetime::FileTime;
 use kfc_core::{
     CompareStrategy, CopyPlan, CopyRule, FileError, InclusionMatcher, IoResultExt, JobStatus,
     JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
-    PlanProgressPhase, PlanStats, ProgressEvent, Result,
+    PlanProgressPhase, PlanStats, ProgressEvent, Result, SelectionMode, compile_group_rule,
+    validate_group_rule,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -33,6 +34,7 @@ impl LocalCopyEngine {
     pub fn validate_rule(&self, rule: &CopyRule) -> Result<ValidatedPaths> {
         rule.validate_structure()?;
         InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
+        validate_group_rule(&rule.filters.group)?;
 
         let source = rule.source.path();
         let destination = rule.destination.path();
@@ -74,12 +76,55 @@ impl LocalCopyEngine {
         self.plan_internal(rule, Some(progress))
     }
 
+    /// Expands the selected group rule into the top-level file paths it matches.
+    ///
+    /// The rule extracts a version-like key from a file name; files whose
+    /// extracted key is in the rule's selected values are copied. Only files
+    /// directly inside the source directory are considered; nested entries and
+    /// directories are ignored.
+    fn grouped_includes(&self, paths: &ValidatedPaths, rule: &CopyRule) -> Result<Vec<String>> {
+        if paths.source_is_file {
+            return Ok(Vec::new());
+        }
+        let matcher = compile_group_rule(&rule.filters.group)?;
+        let Some(matcher) = matcher else {
+            return Ok(Vec::new());
+        };
+        if rule.filters.selected_groups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let selected: std::collections::HashSet<&str> = rule
+            .filters
+            .selected_groups
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut includes = Vec::new();
+        for entry in fs::read_dir(&paths.source).at(&paths.source)? {
+            let entry = entry.at(&paths.source)?;
+            let file_type = entry.file_type().at(entry.path())?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let key = matcher.extract(&name);
+            if key.as_deref().is_some_and(|key| selected.contains(key)) {
+                includes.push(name);
+            }
+        }
+        Ok(includes)
+    }
+
     fn plan_internal<F>(&self, rule: &CopyRule, mut progress: Option<F>) -> Result<CopyPlan>
     where
         F: FnMut(&PlanProgressEvent),
     {
         let paths = self.validate_rule(rule)?;
-        let matcher = InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
+        let mut includes = rule.filters.include.clone();
+        if rule.filters.selection_mode == SelectionMode::Groups {
+            includes = self.grouped_includes(&paths, rule)?;
+        }
+        let matcher = InclusionMatcher::new(&includes, &rule.filters.exclude)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
         let plan_source_root;
@@ -640,7 +685,7 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{EndpointConfig, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{EndpointConfig, FilterConfig, GroupRule, RULE_SCHEMA_VERSION, TriggerConfig};
 
     #[cfg(unix)]
     fn create_directory_link(target: &Path, link: &Path) {
@@ -780,6 +825,61 @@ mod tests {
             fs::read(destination.join("cache/keep/copy.txt")).unwrap(),
             b"copy"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grouped_mode_copies_top_level_files_by_extracted_version() {
+        let root = temp_root("grouped");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Source.zip"), b"zip").unwrap();
+        fs::write(source.join("DSP_2.3.1.0_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_2.3.1.0_Docs.pdf"), b"pdf").unwrap();
+        fs::write(source.join("nested/DSP_1.0.0.1_Extra.exe"), b"exe").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.selection_mode = SelectionMode::Groups;
+        rule.filters.group = Some(GroupRule {
+            label: "Version".into(),
+            pattern: "(\\d+\\.\\d+\\.\\d+\\.\\d+)".into(),
+        });
+        rule.filters.selected_groups = vec!["1.0.0.1".into()];
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 2);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("DSP_1.0.0.1_Release.exe").exists());
+        assert!(destination.join("DSP_1.0.0.1_Source.zip").exists());
+        assert!(!destination.join("DSP_2.3.1.0_Release.exe").exists());
+        assert!(!destination.join("DSP_2.3.1.0_Docs.pdf").exists());
+        assert!(!destination.join("nested/DSP_1.0.0.1_Extra.exe").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_group_pattern_is_rejected() {
+        let root = temp_root("bad-group");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        let mut rule = rule(source, destination);
+        rule.filters.group = Some(GroupRule {
+            label: String::new(),
+            pattern: "[".into(),
+        });
+
+        assert!(matches!(
+            LocalCopyEngine.validate_rule(&rule),
+            Err(KfcError::InvalidRule(_))
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
