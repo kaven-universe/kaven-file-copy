@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CopyPlan, CopyRule, JobEvent, JobSummary, RecentPaths, SourceEntry } from "../types/generated";
+import type { CopyPlan, CopyRule, JobEvent, JobSummary, RecentPaths, SourceEntry, VersionedMapping } from "../types/generated";
 
 export const api = {
   listRules: () => invoke<CopyRule[]>("list_rules"),
@@ -8,6 +8,7 @@ export const api = {
   saveRule: (rule: CopyRule) => invoke<void>("save_rule", { rule }),
   deleteRule: (id: string) => invoke<void>("delete_rule", { id }),
   validateRule: (rule: CopyRule) => invoke<void>("validate_rule", { rule }),
+  detectVersionedMappings: (rule: CopyRule) => invoke<VersionedMapping[]>("detect_versioned_mappings", { rule }),
   previewRule: (rule: CopyRule) => invoke<CopyPlan>("preview_rule", { rule }),
   executeRule: (rule: CopyRule) => invoke<JobSummary>("execute_rule", { rule }),
   cancelJob: () => invoke<void>("cancel_job"),

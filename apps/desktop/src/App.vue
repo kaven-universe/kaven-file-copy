@@ -68,7 +68,7 @@ function newRule(): CopyRule {
     schemaVersion: 1, id: crypto.randomUUID(), name: "New copy rule", enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
     filters: { exclude: [], include: [], includeHidden: true },
-    copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2 },
+    copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2, versioned: { mappings: [], targetNameTemplate: "", versionPattern: "", renamePattern: "" } },
     trigger: { type: "manual" },
   };
 }
@@ -99,6 +99,10 @@ async function rememberRulePaths(rule: CopyRule) {
 function edit(rule?: CopyRule) {
   const copy = structuredClone(rule ? toRaw(rule) : newRule());
   copy.filters.include ??= [];
+  copy.copy.versioned ??= { mappings: [] };
+  copy.copy.versioned.targetNameTemplate ??= "";
+  copy.copy.versioned.versionPattern ??= "";
+  copy.copy.versioned.renamePattern ??= "";
   selectedRule.value = reactive(copy);
   sourceEntries.value = [];
   sourceQuery.value = "";
@@ -167,6 +171,22 @@ function sourceEntryHasOverride(path: string) {
 
 function addGlob() {
   selectedRule.value?.filters.exclude.push({ kind: "glob", value: "**/*.tmp" });
+}
+
+function addVersionedMapping() {
+  selectedRule.value?.copy.versioned.mappings.push({ sourcePattern: "", targetName: "", selection: "latest" });
+}
+
+async function detectVersionedMappings() {
+  const rule = selectedRule.value;
+  if (!rule) return;
+  await act(async () => {
+    const detected = await api.detectVersionedMappings(toRaw(rule));
+    if (selectedRule.value) {
+      selectedRule.value.copy.versioned.mappings = detected;
+      message.value = `Detected ${detected.length} versioned file families from the source.`;
+    }
+  });
 }
 
 async function persist() {
@@ -302,6 +322,7 @@ onMounted(async () => {
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
         <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
         <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" list="recent-destination-paths" autocomplete="off" /><button @click="choosePath('destination', true)">Browse</button></div><datalist id="recent-destination-paths"><option v-for="path in recentPaths.destinations" :key="path" :value="path"></option></datalist></label>
+        <label>Mode<select v-model="selectedRule.copy.mode"><option value="incremental">Incremental mirror</option><option value="versioned">Versioned release</option></select></label>
         <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
         <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
         <label>Trigger<select :value="selectedRule.trigger.type" @change="changeTrigger"><option value="manual">Manual</option><option value="watch">Watch changes</option><option value="interval">Fixed interval</option><option value="cron">Cron</option></select></label>
@@ -314,6 +335,23 @@ onMounted(async () => {
         <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>Include hidden files</span></label>
         <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
         <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">Automatic jobs run only while the desktop application is open.</p>
+      </section>
+      <section v-if="selectedRule.copy.mode === 'versioned'" class="card">
+        <div class="toolbar"><h3>Versioned mappings</h3><span></span><button :disabled="busy || !selectedRule.source.path" @click="detectVersionedMappings">Detect mappings</button><button @click="addVersionedMapping">Add mapping</button></div>
+        <p class="hint wide">The source folder can contain several releases of the same binary. Leave the mapping list empty to <strong>auto-detect</strong> every versioned file family (grouped by base name, newest version wins). Click <strong>Detect mappings</strong> to pre-fill the list for review. Target names support placeholders: <code>{name}</code> (base name without version), <code>{version}</code>, <code>{ext}</code>, and capture groups <code>{1}</code>, <code>{2}</code> from <code>renamePattern</code> — for example target <code>EDM.BIN0003{1}.dll</code> with rename pattern <code>^80([A-Za-z]+)_</code> turns <code>80R_12.1.8.72.bin</code> into <code>EDM.BIN0003R.dll</code>.</p>
+        <div class="versioned-auto form-grid">
+          <label>Target name template<input v-model="selectedRule.copy.versioned.targetNameTemplate" placeholder="{name}.{ext}" /></label>
+          <label>Version pattern (optional)<input v-model="selectedRule.copy.versioned.versionPattern" placeholder="Leave empty for 1.2.0" /></label>
+          <label>Rename pattern (optional)<input v-model="selectedRule.copy.versioned.renamePattern" placeholder="^80([A-Za-z]+)_" /></label>
+        </div>
+        <div v-for="(mapping, index) in selectedRule.copy.versioned.mappings" :key="index" class="versioned-mapping form-grid">
+          <label>Source glob<input v-model="mapping.sourcePattern" placeholder="EDM.DSP.Core_*.dll" /></label>
+          <label>Target name<input v-model="mapping.targetName" placeholder="EDM.DSP.Core.dll" /></label>
+          <label>Selection<select v-model="mapping.selection"><option value="latest">Latest version</option><option value="exact">Exact version</option></select></label>
+          <label v-if="mapping.selection === 'exact'">Version<input v-model="mapping.version" placeholder="1.2.0" /></label>
+          <label>Version pattern (optional)<input v-model="mapping.versionPattern" placeholder="Inherit from rule" /></label>
+          <div class="field-action"><span></span><button @click="selectedRule.copy.versioned.mappings.splice(index, 1)">Remove</button></div>
+        </div>
       </section>
       <section class="card"><div class="toolbar"><h3>Exclusions</h3><span></span><button @click="addGlob">Add glob</button><button @click="browseSource">Browse source tree</button></div>
         <div v-for="(item,index) in selectedRule.filters.exclude.filter(i => i.kind === 'glob')" :key="index" class="field-action"><input v-model="item.value" /><button @click="selectedRule.filters.exclude.splice(selectedRule.filters.exclude.indexOf(item),1)">Remove</button></div>
@@ -380,7 +418,7 @@ onMounted(async () => {
           </div>
           <small>{{ filteredPlanItems.length }} of {{ plan.items.length }} items</small>
         </div>
-        <div v-if="plan && filteredPlanItems.length && previewView === 'list'" class="plan"><div v-for="item in filteredPlanItems" :key="`${item.action}-${item.relativePath}`"><code>{{ item.action }}</code> {{ item.relativePath }} <small>{{ item.reason }}</small></div></div>
+        <div v-if="plan && filteredPlanItems.length && previewView === 'list'" class="plan"><div v-for="item in filteredPlanItems" :key="`${item.action}-${item.relativePath}`"><code>{{ item.action }}</code> {{ item.relativePath }} <small v-if="item.sourceRelativePath && item.sourceRelativePath !== item.relativePath">from {{ item.sourceRelativePath }} · </small><small>{{ item.reason }}</small></div></div>
         <ul v-else-if="plan && filteredPlanItems.length" class="preview-tree" role="tree" aria-label="Preview plan tree">
           <PreviewTreeNode
             v-for="node in previewTree"
