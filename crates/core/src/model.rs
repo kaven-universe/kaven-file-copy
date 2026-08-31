@@ -78,6 +78,16 @@ impl CopyRule {
             }
             _ => {}
         }
+        if self
+            .filters
+            .group
+            .as_ref()
+            .is_some_and(|group| group.pattern.trim().is_empty())
+        {
+            return Err(crate::KfcError::InvalidRule(
+                "group pattern must not be empty".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -106,6 +116,37 @@ pub struct FilterConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
     pub include_hidden: bool,
+    /// Single version-extraction rule for the group-selection mode.
+    #[serde(default)]
+    pub group: Option<GroupRule>,
+    /// Extracted values (for example versions) the user has checked.
+    #[serde(default)]
+    pub selected_groups: Vec<String>,
+    /// Which selection model drives the copy: manual or group rules.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+}
+
+/// A version-extraction rule used to group top-level file names.
+///
+/// The regex's first capture group is extracted from each file name and used as
+/// the group key; files sharing the same captured value form one group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupRule {
+    /// Optional display label shown before the extracted value (for example "Version").
+    #[serde(default)]
+    pub label: String,
+    /// Regex whose first capture group extracts the grouping key (for example the version).
+    pub pattern: String,
+}
+
+#[derive(Debug, Clone, Default, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelectionMode {
+    #[default]
+    Manual,
+    Groups,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

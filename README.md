@@ -8,6 +8,7 @@ Kaven File Copy is a lightweight cross-platform desktop application and CLI for 
 - Shared Rust copy engine used by both the desktop application and CLI.
 - Local file or directory sources and local directory destinations.
 - Positive-selection source tree and list views: check the files and folders to copy, with tri-state child deselection.
+- A version rule: extract versions from top-level file names with one regex capture group, then select whole versions to copy.
 - Versioned JSON rules with import/export and JSON Schema.
 - Incremental planning based on size and modification time, plus dry-run preview with live progress, filtering, and list/tree result views.
 - Bounded concurrent copying, retries, cooperative cancellation, and modification-time preservation.

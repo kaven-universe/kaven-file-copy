@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildGroupTree,
   buildSourceTree,
   filterSourceEntries,
   formatBytes,
@@ -134,4 +135,54 @@ test("formatModified renders a local timestamp or placeholder", () => {
   assert.equal(formatModified(null), "—");
   assert.equal(formatModified(undefined), "—");
   assert.match(formatModified(0), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+});
+
+test("buildGroupTree groups top-level files by extracted version", () => {
+  const entries = [
+    { relativePath: "DSP_1.0.0_Release.exe", directory: false, size: 1, modified: 1 },
+    { relativePath: "DSP_1.0.0_Source.zip", directory: false, size: 2, modified: 2 },
+    { relativePath: "DSP_2.3.1_Release.exe", directory: false, size: 3, modified: 3 },
+    { relativePath: "nested/DSP_1.0.0_Extra.exe", directory: false, size: 4, modified: 4 },
+    { relativePath: "docs", directory: true, size: 0, modified: 5 },
+  ];
+  const group = { label: "Version", pattern: "(\\d+\\.\\d+\\.\\d+)" };
+
+  const tree = buildGroupTree(entries, group, ["1.0.0"], "");
+
+  assert.deepEqual(tree.map((node) => node.key), ["1.0.0", "2.3.1"]);
+  assert.deepEqual(
+    tree[0].matched.map((file) => file.relativePath),
+    ["DSP_1.0.0_Release.exe", "DSP_1.0.0_Source.zip"],
+  );
+  assert.equal(tree[0].selected, true);
+  assert.equal(tree[1].selected, false);
+});
+
+test("buildGroupTree puts unmatched files in the other group and filters by query", () => {
+  const entries = [
+    { relativePath: "DSP_1.0.0_Release.exe", directory: false, size: 1, modified: 1 },
+    { relativePath: "readme.md", directory: false, size: 2, modified: 2 },
+  ];
+  const group = { label: "", pattern: "(\\d+\\.\\d+\\.\\d+)" };
+
+  const tree = buildGroupTree(entries, group, [], "");
+  assert.deepEqual(tree.map((node) => node.key), ["1.0.0", ""]);
+  assert.deepEqual(tree[1].matched.map((file) => file.relativePath), ["readme.md"]);
+  assert.equal(tree[1].label, "Other files");
+
+  const filtered = buildGroupTree(entries, group, [], "readme");
+  assert.deepEqual(filtered.map((node) => node.key), [""]);
+});
+
+test("buildGroupTree tolerates invalid regex patterns and missing rules", () => {
+  const entries = [{ relativePath: "DSP_1.0.0_Release.exe", directory: false, size: 1, modified: 1 }];
+
+  const broken = buildGroupTree(entries, { label: "", pattern: "[" }, [], "");
+  assert.equal(broken.length, 1);
+  assert.equal(broken[0].label, "Other files");
+  assert.deepEqual(broken[0].matched.map((file) => file.relativePath), ["DSP_1.0.0_Release.exe"]);
+
+  const none = buildGroupTree(entries, null, [], "");
+  assert.equal(none.length, 1);
+  assert.equal(none[0].label, "Other files");
 });
