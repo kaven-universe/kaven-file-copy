@@ -3,19 +3,22 @@ import test from "node:test";
 import {
   buildSourceTree,
   filterSourceEntries,
+  formatBytes,
+  formatModified,
   hasPathDescendantOverride,
   isPathIncluded,
   setPathIncluded,
+  sortSourceEntries,
 } from "../src/source-tree";
 
 test("buildSourceTree groups entries by every path segment", () => {
   const tree = buildSourceTree([
-    { relativePath: "projects/web/index.html", directory: false },
-    { relativePath: "README.md", directory: false },
-    { relativePath: "projects/api/src/main.rs", directory: false },
-    { relativePath: "projects", directory: true },
-    { relativePath: "projects/web", directory: true },
-    { relativePath: "projects/api", directory: true },
+    { relativePath: "projects/web/index.html", directory: false, size: 20, modified: 1 },
+    { relativePath: "README.md", directory: false, size: 10, modified: 2 },
+    { relativePath: "projects/api/src/main.rs", directory: false, size: 30, modified: 3 },
+    { relativePath: "projects", directory: true, size: 0, modified: 4 },
+    { relativePath: "projects/web", directory: true, size: 0, modified: 5 },
+    { relativePath: "projects/api", directory: true, size: 0, modified: 6 },
   ]);
 
   assert.deepEqual(tree.map((node) => node.name), ["projects", "README.md"]);
@@ -25,15 +28,48 @@ test("buildSourceTree groups entries by every path segment", () => {
   assert.equal(tree[0].children[1].children[0].relativePath, "projects/web/index.html");
 });
 
-test("buildSourceTree normalizes separators and sorts directories before files", () => {
+test("buildSourceTree carries size and modified through implicit directories", () => {
   const tree = buildSourceTree([
-    { relativePath: "z.txt", directory: false },
-    { relativePath: "folder\\child.txt", directory: false },
+    { relativePath: "folder\\child.txt", directory: false, size: 42, modified: 1_700_000_000_000 },
   ]);
 
-  assert.equal(tree[0].name, "folder");
   assert.equal(tree[0].directory, true);
-  assert.equal(tree[0].children[0].relativePath, "folder/child.txt");
+  assert.equal(tree[0].size, 0);
+  assert.equal(tree[0].modified, null);
+  assert.equal(tree[0].children[0].size, 42);
+  assert.equal(tree[0].children[0].modified, 1_700_000_000_000);
+});
+
+test("source entries sort by size and modified with directories first", () => {
+  const entries = [
+    { relativePath: "b.txt", directory: false, size: 300, modified: 1 },
+    { relativePath: "folder", directory: true, size: 0, modified: 9 },
+    { relativePath: "a.txt", directory: false, size: 100, modified: 3 },
+    { relativePath: "c.txt", directory: false, size: 200, modified: 2 },
+  ];
+
+  const bySizeAsc = sortSourceEntries(entries, { key: "size", direction: "asc" });
+  assert.deepEqual(bySizeAsc.map((entry) => entry.relativePath), ["folder", "a.txt", "c.txt", "b.txt"]);
+
+  const bySizeDesc = sortSourceEntries(entries, { key: "size", direction: "desc" });
+  assert.deepEqual(bySizeDesc.map((entry) => entry.relativePath), ["folder", "b.txt", "c.txt", "a.txt"]);
+
+  const byModifiedAsc = sortSourceEntries(entries, { key: "modified", direction: "asc" });
+  assert.deepEqual(byModifiedAsc.map((entry) => entry.relativePath), ["folder", "b.txt", "c.txt", "a.txt"]);
+
+  const byTypeDesc = sortSourceEntries(entries, { key: "type", direction: "desc" });
+  assert.equal(byTypeDesc[0].directory, false);
+  assert.equal(byTypeDesc.at(-1)?.directory, true);
+});
+
+test("buildSourceTree sorts tree levels by the requested key", () => {
+  const tree = buildSourceTree([
+    { relativePath: "b.txt", directory: false, size: 300, modified: 1 },
+    { relativePath: "a.txt", directory: false, size: 100, modified: 3 },
+    { relativePath: "folder", directory: true, size: 0, modified: 9 },
+  ], { key: "size", direction: "desc" });
+
+  assert.deepEqual(tree.map((node) => node.name), ["folder", "b.txt", "a.txt"]);
 });
 
 test("an empty selection includes nothing", () => {
@@ -77,9 +113,9 @@ test("a deeper selection can override a deselected child", () => {
 
 test("source entries filter by path and file or folder type", () => {
   const entries = [
-    { relativePath: "Photos", directory: true },
-    { relativePath: "Photos/Beach.JPG", directory: false },
-    { relativePath: "documents/report.txt", directory: false },
+    { relativePath: "Photos", directory: true, size: 0, modified: 1 },
+    { relativePath: "Photos/Beach.JPG", directory: false, size: 100, modified: 2 },
+    { relativePath: "documents/report.txt", directory: false, size: 200, modified: 3 },
   ];
 
   assert.deepEqual(filterSourceEntries(entries, "all", " beach "), [entries[1]]);
@@ -95,4 +131,19 @@ test("list selection state matches parent and child overrides", () => {
   assert.equal(isPathIncluded("cache/keep/file.txt", included, excluded), false);
   assert.equal(hasPathDescendantOverride("cache", included, excluded), true);
   assert.equal(hasPathDescendantOverride("cache/keep", included, excluded), false);
+});
+
+test("formatBytes renders human readable sizes", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(1023), "1023 B");
+  assert.equal(formatBytes(1024), "1.0 KB");
+  assert.equal(formatBytes(5 * 1024 * 1024), "5.0 MB");
+  assert.equal(formatBytes(null), "—");
+  assert.equal(formatBytes(undefined), "—");
+});
+
+test("formatModified renders a local timestamp or placeholder", () => {
+  assert.equal(formatModified(null), "—");
+  assert.equal(formatModified(undefined), "—");
+  assert.match(formatModified(0), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
 });

@@ -10,12 +10,18 @@ import SourceTreeNode from "./SourceTreeNode.vue";
 import {
   buildSourceTree,
   filterSourceEntries,
+  formatBytes,
+  formatModified,
   hasPathDescendantOverride,
   isPathIncluded,
   normalizeTreePath,
   setPathIncluded,
+  sortSourceEntries,
   type SourceEntryTypeFilter,
+  type SourceSort,
+  type SourceSortKey,
   type SourceView,
+  type SortDirection,
 } from "./source-tree";
 import type { CopyPlan, CopyRule, JobEvent, JobSummary, PlanProgressEvent, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
 
@@ -29,6 +35,8 @@ const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
 const sourceType = ref<SourceEntryTypeFilter>("all");
 const sourceView = ref<SourceView>("tree");
+const sourceSortKey = ref<SourceSortKey>("name");
+const sourceSortDirection = ref<SortDirection>("asc");
 const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
 const busy = ref(false);
 const message = ref("");
@@ -49,7 +57,12 @@ const filteredSourceEntries = computed(() => filterSourceEntries(
   sourceType.value,
   sourceQuery.value,
 ));
-const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value));
+const sourceSort = computed<SourceSort>(() => ({
+  key: sourceSortKey.value,
+  direction: sourceSortDirection.value,
+}));
+const sortedSourceEntries = computed(() => sortSourceEntries(filteredSourceEntries.value, sourceSort.value));
+const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value, sourceSort.value));
 const sourceFilterActive = computed(() => (
   sourceType.value !== "all" || sourceQuery.value.trim().length > 0
 ));
@@ -159,6 +172,10 @@ function sourceEntryIncluded(path: string) {
 
 function sourceEntryHasOverride(path: string) {
   return hasPathDescendantOverride(path, pathInclusions.value, pathExclusions.value);
+}
+
+function toggleSourceSortDirection() {
+  sourceSortDirection.value = sourceSortDirection.value === "asc" ? "desc" : "asc";
 }
 
 async function persist() {
@@ -316,6 +333,20 @@ onMounted(async () => {
             <option value="folders">Folders</option>
             <option value="files">Files</option>
           </select>
+          <select v-model="sourceSortKey" aria-label="Sort source entries by">
+            <option value="name">Sort by name</option>
+            <option value="type">Sort by type</option>
+            <option value="size">Sort by size</option>
+            <option value="modified">Sort by modified</option>
+          </select>
+          <button
+            type="button"
+            class="sort-direction"
+            :title="`Sort ${sourceSortDirection === 'asc' ? 'ascending' : 'descending'} (click to toggle)`"
+            :aria-label="`Sort direction: ${sourceSortDirection}`"
+            :aria-pressed="sourceSortDirection === 'desc'"
+            @click="toggleSourceSortDirection"
+          >{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</button>
           <div class="view-switch" role="group" aria-label="Source layout">
             <button type="button" :class="{ active: sourceView === 'list' }" :aria-pressed="sourceView === 'list'" @click="sourceView = 'list'">List</button>
             <button type="button" :class="{ active: sourceView === 'tree' }" :aria-pressed="sourceView === 'tree'" @click="sourceView = 'tree'">Tree</button>
@@ -333,8 +364,8 @@ onMounted(async () => {
             @toggle-included="toggleIncluded"
           />
         </ul>
-        <ul v-else-if="filteredSourceEntries.length" class="source-list" aria-label="Files to copy list">
-          <li v-for="entry in filteredSourceEntries" :key="entry.relativePath">
+        <ul v-else-if="sortedSourceEntries.length" class="source-list" aria-label="Files to copy list">
+          <li v-for="entry in sortedSourceEntries" :key="entry.relativePath">
             <label class="source-list-row">
               <input
                 type="checkbox"
@@ -343,8 +374,10 @@ onMounted(async () => {
                 :aria-label="`Include ${entry.relativePath}`"
                 @change="toggleIncluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
               />
-              <span :title="entry.relativePath">{{ entry.relativePath }}</span>
-              <small>{{ entry.directory ? 'Folder' : 'File' }}</small>
+              <span class="source-list-name" :title="entry.relativePath">{{ entry.relativePath }}</span>
+              <small class="source-list-type">{{ entry.directory ? 'Folder' : 'File' }}</small>
+              <small class="source-list-size">{{ entry.directory ? '—' : formatBytes(entry.size) }}</small>
+              <small class="source-list-modified">{{ formatModified(entry.modified) }}</small>
             </label>
           </li>
         </ul>
