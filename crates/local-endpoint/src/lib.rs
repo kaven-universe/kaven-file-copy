@@ -20,7 +20,8 @@ use filetime::FileTime;
 use kfc_core::{
     CompareStrategy, CopyPlan, CopyRule, FileError, InclusionMatcher, IoResultExt, JobStatus,
     JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
-    PlanProgressPhase, PlanStats, ProgressEvent, Result,
+    PlanProgressPhase, PlanStats, ProgressEvent, Result, SelectionMode, compile_group_matchers,
+    validate_group_rules,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -33,6 +34,7 @@ impl LocalCopyEngine {
     pub fn validate_rule(&self, rule: &CopyRule) -> Result<ValidatedPaths> {
         rule.validate_structure()?;
         InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
+        validate_group_rules(&rule.filters.groups)?;
 
         let source = rule.source.path();
         let destination = rule.destination.path();
@@ -74,12 +76,43 @@ impl LocalCopyEngine {
         self.plan_internal(rule, Some(progress))
     }
 
+    /// Expands the selected group rules into the top-level file paths they match.
+    ///
+    /// Only files directly inside the source directory are considered; nested
+    /// entries and directories are ignored.
+    fn grouped_includes(&self, paths: &ValidatedPaths, rule: &CopyRule) -> Result<Vec<String>> {
+        if paths.source_is_file {
+            return Ok(Vec::new());
+        }
+        let matchers = compile_group_matchers(&rule.filters)?;
+        if matchers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut includes = Vec::new();
+        for entry in fs::read_dir(&paths.source).at(&paths.source)? {
+            let entry = entry.at(&paths.source)?;
+            let file_type = entry.file_type().at(entry.path())?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if matchers.iter().any(|matcher| matcher.matches(&name)) {
+                includes.push(name);
+            }
+        }
+        Ok(includes)
+    }
+
     fn plan_internal<F>(&self, rule: &CopyRule, mut progress: Option<F>) -> Result<CopyPlan>
     where
         F: FnMut(&PlanProgressEvent),
     {
         let paths = self.validate_rule(rule)?;
-        let matcher = InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
+        let mut includes = rule.filters.include.clone();
+        if rule.filters.selection_mode == SelectionMode::Groups {
+            includes = self.grouped_includes(&paths, rule)?;
+        }
+        let matcher = InclusionMatcher::new(&includes, &rule.filters.exclude)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
         let plan_source_root;
@@ -640,7 +673,9 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{EndpointConfig, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{
+        EndpointConfig, FilterConfig, GroupMatchMode, GroupRule, RULE_SCHEMA_VERSION, TriggerConfig,
+    };
 
     #[cfg(unix)]
     fn create_directory_link(target: &Path, link: &Path) {
@@ -780,6 +815,68 @@ mod tests {
             fs::read(destination.join("cache/keep/copy.txt")).unwrap(),
             b"copy"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grouped_mode_copies_only_top_level_files_of_selected_groups() {
+        let root = temp_root("grouped");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("photo1.jpg"), b"jpg").unwrap();
+        fs::write(source.join("photo2.jpg"), b"jpg").unwrap();
+        fs::write(source.join("notes.txt"), b"txt").unwrap();
+        fs::write(source.join("nested/inner.jpg"), b"jpg").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.selection_mode = SelectionMode::Groups;
+        rule.filters.groups = vec![
+            GroupRule {
+                name: "Images".into(),
+                pattern: "*.jpg".into(),
+                mode: GroupMatchMode::Glob,
+            },
+            GroupRule {
+                name: "Notes".into(),
+                pattern: "\\.txt$".into(),
+                mode: GroupMatchMode::Regex,
+            },
+        ];
+        rule.filters.selected_groups = vec!["Images".into()];
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 2);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("photo1.jpg").exists());
+        assert!(destination.join("photo2.jpg").exists());
+        assert!(!destination.join("notes.txt").exists());
+        assert!(!destination.join("nested/inner.jpg").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_group_pattern_is_rejected() {
+        let root = temp_root("bad-group");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        let mut rule = rule(source, destination);
+        rule.filters.groups = vec![GroupRule {
+            name: "Broken".into(),
+            pattern: "[".into(),
+            mode: GroupMatchMode::Regex,
+        }];
+
+        assert!(matches!(
+            LocalCopyEngine.validate_rule(&rule),
+            Err(KfcError::InvalidRule(_))
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

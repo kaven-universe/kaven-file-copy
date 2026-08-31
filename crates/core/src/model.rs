@@ -78,6 +78,27 @@ impl CopyRule {
             }
             _ => {}
         }
+        if self
+            .filters
+            .groups
+            .iter()
+            .any(|group| group.name.trim().is_empty() || group.pattern.trim().is_empty())
+        {
+            return Err(crate::KfcError::InvalidRule(
+                "group names and patterns must not be empty".into(),
+            ));
+        }
+        if let Some(missing) = self.filters.selected_groups.iter().find(|selected| {
+            !self
+                .filters
+                .groups
+                .iter()
+                .any(|group| &group.name == *selected)
+        }) {
+            return Err(crate::KfcError::InvalidRule(format!(
+                "selected group '{missing}' does not match any configured group"
+            )));
+        }
         Ok(())
     }
 }
@@ -106,6 +127,40 @@ pub struct FilterConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
     pub include_hidden: bool,
+    /// Group definitions for the group-selection mode.
+    #[serde(default)]
+    pub groups: Vec<GroupRule>,
+    /// Names of the groups the user has checked in group-selection mode.
+    #[serde(default)]
+    pub selected_groups: Vec<String>,
+    /// Which selection model drives the copy: manual or group rules.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupRule {
+    pub name: String,
+    pub pattern: String,
+    #[serde(default)]
+    pub mode: GroupMatchMode,
+}
+
+#[derive(Debug, Clone, Default, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GroupMatchMode {
+    #[default]
+    Regex,
+    Glob,
+}
+
+#[derive(Debug, Clone, Default, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelectionMode {
+    #[default]
+    Manual,
+    Groups,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

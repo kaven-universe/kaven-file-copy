@@ -1,8 +1,16 @@
-import type { SourceEntry } from "./types/generated";
+import type { GroupMatchMode, GroupRule, SourceEntry } from "./types/generated";
 
 export interface SourceTreeNode extends SourceEntry {
   name: string;
   children: SourceTreeNode[];
+}
+
+export interface GroupTreeNode {
+  name: string;
+  pattern: string;
+  mode: GroupMatchMode;
+  selected: boolean;
+  matched: SourceEntry[];
 }
 
 export interface PathSelectionState {
@@ -120,6 +128,81 @@ export function formatModified(modified: number | null | undefined) {
   if (Number.isNaN(date.getTime())) return "—";
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function buildGroupTree(
+  entries: SourceEntry[],
+  groups: GroupRule[],
+  selectedGroups: Iterable<string>,
+  query: string,
+): GroupTreeNode[] {
+  const selected = new Set(selectedGroups);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const topLevelFiles = entries.filter(
+    (entry) => !entry.directory && !normalizeTreePath(entry.relativePath).includes("/"),
+  );
+  const nodes = groups.map<GroupTreeNode>((group) => ({
+    name: group.name,
+    pattern: group.pattern,
+    mode: group.mode,
+    selected: selected.has(group.name),
+    matched: [],
+  }));
+  const unmatched: GroupTreeNode = {
+    name: "Other files",
+    pattern: "",
+    mode: "glob",
+    selected: false,
+    matched: [],
+  };
+  const matchers = nodes.map((node) => ({
+    node,
+    regex: compileGroupPattern(node.pattern, node.mode),
+  }));
+  for (const file of topLevelFiles) {
+    const matched = matchers.find(({ regex }) => regex.test(entryName(file)));
+    (matched ? matched.node : unmatched).matched.push(file);
+  }
+  const result = unmatched.matched.length > 0 ? [...nodes, unmatched] : nodes;
+  if (!normalizedQuery) return result;
+  return result.filter(
+    (node) =>
+      node.name.toLocaleLowerCase().includes(normalizedQuery)
+      || node.matched.some((file) =>
+        normalizeTreePath(file.relativePath).toLocaleLowerCase().includes(normalizedQuery),
+      ),
+  );
+}
+
+function compileGroupPattern(pattern: string, mode: GroupMatchMode): RegExp {
+  try {
+    return new RegExp(mode === "regex" ? pattern : globToRegex(pattern));
+  } catch {
+    return new RegExp("(?!)");
+  }
+}
+
+function globToRegex(glob: string): string {
+  let expression = "^";
+  for (let index = 0; index < glob.length; index += 1) {
+    const character = glob[index];
+    if (character === "*") {
+      if (glob[index + 1] === "*") {
+        expression += ".*";
+        index += 1;
+      } else {
+        expression += "[^/]*";
+      }
+    } else if (character === "?") {
+      expression += "[^/]";
+    } else if (".+()|^$[]{}-\\".includes(character)) {
+      expression += `\\${character}`;
+    } else {
+      expression += character;
+    }
+  }
+  expression += "$";
+  return expression;
 }
 
 export function setPathIncluded(

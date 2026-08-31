@@ -19,7 +19,10 @@
       "properties": {
         "include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "includeHidden": { "type": "boolean" }
+        "includeHidden": { "type": "boolean" },
+        "selectionMode": { "enum": ["manual", "groups"] },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/groupRule" } },
+        "selectedGroups": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
     "copy": {
@@ -44,6 +47,16 @@
       "additionalProperties": false,
       "required": ["type", "path"],
       "properties": { "type": { "const": "local" }, "path": { "type": "string", "minLength": 1 } }
+    },
+    "groupRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "pattern"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "pattern": { "type": "string", "minLength": 1 },
+        "mode": { "enum": ["regex", "glob"] }
+      }
     },
     "trigger": {
       "oneOf": [

@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::{KfcError, Result};
+use regex::Regex;
+
+use crate::{FilterConfig, GroupMatchMode, GroupRule, KfcError, Result};
 
 /// Decides which source entries a copy rule selects.
 ///
@@ -75,6 +77,85 @@ fn deepest_match(paths: &[String], target: &str) -> Option<usize> {
         })
         .map(String::len)
         .max()
+}
+
+/// A compiled group rule used to match top-level source file names.
+pub struct GroupMatcher {
+    pub name: String,
+    pattern: Regex,
+}
+
+impl GroupMatcher {
+    pub fn matches(&self, file_name: &str) -> bool {
+        self.pattern.is_match(file_name)
+    }
+}
+
+/// Validates that every group pattern compiles and is usable.
+pub fn validate_group_rules(groups: &[GroupRule]) -> Result<()> {
+    for group in groups {
+        compile_group_matcher(group)?;
+    }
+    Ok(())
+}
+
+/// Compiles only the groups that are currently selected for copying.
+pub fn compile_group_matchers(filters: &FilterConfig) -> Result<Vec<GroupMatcher>> {
+    filters
+        .groups
+        .iter()
+        .filter(|group| {
+            filters
+                .selected_groups
+                .iter()
+                .any(|name| name == &group.name)
+        })
+        .map(compile_group_matcher)
+        .collect()
+}
+
+fn compile_group_matcher(group: &GroupRule) -> Result<GroupMatcher> {
+    let expression = match group.mode {
+        GroupMatchMode::Regex => group.pattern.clone(),
+        GroupMatchMode::Glob => glob_to_regex(&group.pattern),
+    };
+    let pattern = Regex::new(&expression).map_err(|error| {
+        KfcError::InvalidRule(format!(
+            "invalid group pattern '{}': {error}",
+            group.pattern
+        ))
+    })?;
+    Ok(GroupMatcher {
+        name: group.name.clone(),
+        pattern,
+    })
+}
+
+fn glob_to_regex(glob: &str) -> String {
+    let mut expression = String::from("^");
+    let characters: Vec<char> = glob.chars().collect();
+    let mut index = 0;
+    while index < characters.len() {
+        match characters[index] {
+            '*' => {
+                if characters.get(index + 1) == Some(&'*') {
+                    expression.push_str(".*");
+                    index += 1;
+                } else {
+                    expression.push_str("[^/]*");
+                }
+            }
+            '?' => expression.push_str("[^/]"),
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '[' | ']' | '{' | '}' | '-' | '\\' => {
+                expression.push('\\');
+                expression.push(characters[index]);
+            }
+            character => expression.push(character),
+        }
+        index += 1;
+    }
+    expression.push('$');
+    expression
 }
 
 fn normalize_rule_path(value: &str) -> Result<String> {

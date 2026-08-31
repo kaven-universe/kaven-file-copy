@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildGroupTree,
   buildSourceTree,
   filterSourceEntries,
   formatBytes,
@@ -134,4 +135,52 @@ test("formatModified renders a local timestamp or placeholder", () => {
   assert.equal(formatModified(null), "—");
   assert.equal(formatModified(undefined), "—");
   assert.match(formatModified(0), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+});
+
+test("buildGroupTree groups top-level files by glob and regex rules", () => {
+  const entries = [
+    { relativePath: "photo1.jpg", directory: false, size: 1, modified: 1 },
+    { relativePath: "photo2.jpg", directory: false, size: 2, modified: 2 },
+    { relativePath: "notes.txt", directory: false, size: 3, modified: 3 },
+    { relativePath: "sub/inner.jpg", directory: false, size: 4, modified: 4 },
+    { relativePath: "docs", directory: true, size: 0, modified: 5 },
+  ];
+  const groups = [
+    { name: "Images", pattern: "*.jpg", mode: "glob" as const },
+    { name: "Notes", pattern: "\\.txt$", mode: "regex" as const },
+  ];
+
+  const tree = buildGroupTree(entries, groups, ["Images"], "");
+
+  assert.deepEqual(tree.map((node) => node.name), ["Images", "Notes"]);
+  assert.deepEqual(tree[0].matched.map((file) => file.relativePath), ["photo1.jpg", "photo2.jpg"]);
+  assert.equal(tree[0].selected, true);
+  assert.deepEqual(tree[1].matched.map((file) => file.relativePath), ["notes.txt"]);
+  assert.equal(tree[1].selected, false);
+});
+
+test("buildGroupTree puts unmatched files in the other group and filters by query", () => {
+  const entries = [
+    { relativePath: "a.jpg", directory: false, size: 1, modified: 1 },
+    { relativePath: "readme.md", directory: false, size: 2, modified: 2 },
+  ];
+  const groups = [{ name: "Images", pattern: "*.jpg", mode: "glob" as const }];
+
+  const tree = buildGroupTree(entries, groups, [], "");
+  assert.deepEqual(tree.map((node) => node.name), ["Images", "Other files"]);
+  assert.deepEqual(tree[1].matched.map((file) => file.relativePath), ["readme.md"]);
+  assert.equal(tree[1].pattern, "");
+
+  const filtered = buildGroupTree(entries, groups, [], "readme");
+  assert.deepEqual(filtered.map((node) => node.name), ["Other files"]);
+});
+
+test("buildGroupTree tolerates invalid regex patterns", () => {
+  const entries = [{ relativePath: "a.txt", directory: false, size: 1, modified: 1 }];
+  const groups = [{ name: "Broken", pattern: "[", mode: "regex" as const }];
+
+  const tree = buildGroupTree(entries, groups, [], "");
+  assert.equal(tree[0].matched.length, 0);
+  assert.equal(tree.length, 2);
+  assert.deepEqual(tree[1].matched.map((file) => file.relativePath), ["a.txt"]);
 });
