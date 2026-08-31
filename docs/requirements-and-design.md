@@ -17,8 +17,9 @@ V1 transfers files only on the local machine. The core model must not depend on 
 1. Create, edit, duplicate, enable, disable, and delete copy rules.
 2. Select source files/directories and destination directories with native system pickers.
 3. Browse the source tree in the UI and check the files and folders to copy, with tri-state child deselection.
-4. Persist rules and support exporting and importing them.
-5. Provide a CLI that validates, previews, and executes rules exported by the UI.
+4. Or configure group rules whose regex capture group extracts a version from each top-level file name, then select the versions to copy.
+5. Persist rules and support exporting and importing them.
+6. Provide a CLI that validates, previews, and executes rules exported by the UI.
 6. Support manual copy, automatic synchronization after detecting source changes, and interval- or cron-based scheduled synchronization.
 7. Support incremental copy, job cancellation, progress reporting, and retry on failure.
 8. Record detailed rule, job, file-operation, error, and statistics logs.
@@ -312,6 +313,8 @@ Each job stores an immutable rule snapshot, trigger reason, and statistics. Afte
 
 Selection paths always use `/` as the separator. Platform paths are converted at the adapter boundary. An `include` path selects that relative path and its descendants. A more-specific `exclude` path deselects part of that subtree again, and an even deeper `include` can re-select a part of the deselected subtree. An empty `include` list copies nothing, so the UI presents "check the files you want to copy". The UI represents mixed subtrees with an indeterminate parent checkbox.
 
+Group-selection mode instead scans only the top level of the source directory and extracts a key from each file name using the configured regex capture groups (for example a version such as `1.0.0`). Files sharing the same extracted key form one group; files matched by no rule appear in an "Other files" group. Only files whose extracted key is selected are copied; the copy engine expands the selected keys into include paths at plan time.
+
 ## 10. UI Information Architecture
 
 ### 10.1 Rule List
@@ -322,7 +325,7 @@ Selection paths always use `/` as the separator. Platform paths are converted at
 ### 10.2 Rule Editor
 
 - Basic information: name, source, and destination.
-- Files to copy: source tree/list selection with tri-state checkboxes and match preview.
+- Files to copy: manual source tree/list selection with tri-state checkboxes, or group rules that extract versions from top-level file names, with match preview.
 - Copy options: comparison, symbolic links, concurrency, and retries.
 - Trigger: manual, watch for changes, fixed interval, or cron.
 - Validation before save, with dry run as the primary confirmation mechanism.

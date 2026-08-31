@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::{KfcError, Result};
+use regex::Regex;
+
+use crate::{GroupRule, KfcError, Result};
 
 /// Decides which source entries a copy rule selects.
 ///
@@ -75,6 +77,58 @@ fn deepest_match(paths: &[String], target: &str) -> Option<usize> {
         })
         .map(String::len)
         .max()
+}
+
+/// A compiled group rule that extracts a key (for example a version) from a
+/// top-level source file name.
+pub struct GroupMatcher {
+    pub label: String,
+    pattern: Regex,
+}
+
+impl GroupMatcher {
+    /// Extracts the grouping key from a file name, or `None` when it does not match.
+    ///
+    /// The regex's first capture group wins; when the pattern has no capture
+    /// group the whole match is used as the key.
+    pub fn extract(&self, file_name: &str) -> Option<String> {
+        let captures = self.pattern.captures(file_name)?;
+        let value = captures
+            .get(1)
+            .or_else(|| captures.get(0))
+            .map(|matched| matched.as_str())?;
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_owned())
+        }
+    }
+}
+
+/// Validates that every group pattern compiles and is usable.
+pub fn validate_group_rules(groups: &[GroupRule]) -> Result<()> {
+    for group in groups {
+        compile_group_matcher(group)?;
+    }
+    Ok(())
+}
+
+/// Compiles all configured group rules for version extraction.
+pub fn compile_group_rules(groups: &[GroupRule]) -> Result<Vec<GroupMatcher>> {
+    groups.iter().map(compile_group_matcher).collect()
+}
+
+fn compile_group_matcher(group: &GroupRule) -> Result<GroupMatcher> {
+    let pattern = Regex::new(&group.pattern).map_err(|error| {
+        KfcError::InvalidRule(format!(
+            "invalid group pattern '{}': {error}",
+            group.pattern
+        ))
+    })?;
+    Ok(GroupMatcher {
+        label: group.label.clone(),
+        pattern,
+    })
 }
 
 fn normalize_rule_path(value: &str) -> Result<String> {

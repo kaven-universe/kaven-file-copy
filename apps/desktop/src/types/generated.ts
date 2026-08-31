@@ -1,5 +1,7 @@
 // Contract mirror for schemaVersion 1. Replace with generated output once the schema generator is wired into CI.
 export type EndpointConfig = { type: "local"; path: string };
+export interface GroupRule { label: string; pattern: string }
+export type SelectionMode = "manual" | "groups";
 export type TriggerConfig =
   | { type: "manual" }
   | { type: "watch"; debounceMs: number }
@@ -13,7 +15,14 @@ export interface CopyRule {
   enabled: boolean;
   source: EndpointConfig;
   destination: EndpointConfig;
-  filters: { include: string[]; exclude: string[]; includeHidden: boolean };
+  filters: {
+    include: string[];
+    exclude: string[];
+    includeHidden: boolean;
+    groups: GroupRule[];
+    selectedGroups: string[];
+    selectionMode: SelectionMode;
+  };
   copy: {
     mode: "incremental";
     compare: "size-and-mtime" | "size-only";
