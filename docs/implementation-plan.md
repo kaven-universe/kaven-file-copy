@@ -12,7 +12,7 @@ V1 is complete when:
 - Manual, source-watch, and scheduled triggers all use the same copy engine.
 - Failures, cancellation, retries, and abnormal exits produce explicit results and searchable logs.
 - Core tests and the minimum cross-platform CI matrix pass.
-- User documentation explains copy semantics, exclusions, background-execution limitations, and recovery behavior.
+- User documentation explains copy semantics, the file selection, background-execution limitations, and recovery behavior.
 
 ## 2. Milestones
 
@@ -31,7 +31,7 @@ Exit criterion: an empty rule can be serialized, exported, and imported again; t
 ### M1: Local Copy Core
 
 - Implement the local endpoint and capability description.
-- Implement path-safety validation, scanning, and path/glob exclusions.
+- Implement path-safety validation, scanning, and positive-selection filtering.
 - Implement comparison, plan generation, and dry run.
 - Implement streaming copy, temporary-file commit, concurrency control, retries, cancellation, and progress events.
 - Add the job state machine and structured logging.
@@ -52,8 +52,7 @@ Exit criterion: the CLI executes reference rules with results matching core inte
 ### M3: Desktop Rule Management and Manual Execution
 
 - Build the rule list and editor.
-- Add native source/destination pickers, source tree, and exclusion selection.
-- Add glob editing and match preview.
+- Add native source/destination pickers and the positive-selection source tree.
 - Add file-based rule persistence, import, export, atomic writes, and conflict handling.
 - Add dry-run confirmation, progress, cancellation, summaries, and detailed logs.
 - Add a CSS reset, design tokens, font fallbacks, and cross-platform visual checks.
@@ -74,7 +73,7 @@ Exit criterion: high-frequency changes do not create a job storm, and missed eve
 - Produce Windows, macOS, and Linux installers plus CLI binaries.
 - Add log rotation, history cleanup, diagnostic export, and privacy redaction.
 - Run large-tree performance, fault-injection, and long-running watcher tests.
-- Complete the user guide, rule reference, exclusion syntax, troubleshooting, and upgrade documentation.
+- Complete the user guide, rule reference, selection syntax, troubleshooting, and upgrade documentation.
 - Add code signing, automatic updates, and background execution as product decisions require.
 
 Exit criterion: the release checklist passes, no known defect can corrupt data, and all known limitations are clearly presented.
@@ -85,7 +84,7 @@ Exit criterion: the release checklist passes, no known defect can corrupt data, 
 2. Define `CopyRuleV1`, JSON Schema, sample rules, and the migration interface.
 3. Define file-based repository interfaces, atomic-write behavior, and the application-data layout.
 4. Define `Endpoint`, its capability model, and a fake endpoint for testing.
-5. Implement path safety and exclusion matching.
+5. Implement path safety and selection matching.
 6. Implement scan, plan, and dry run.
 7. Implement the executor, cancellation, retries, atomic commit, and progress events.
 8. Add tracing logs and the job state machine.

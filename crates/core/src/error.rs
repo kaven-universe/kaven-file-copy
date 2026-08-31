@@ -16,8 +16,6 @@ pub enum KfcError {
         #[source]
         source: std::io::Error,
     },
-    #[error("invalid exclusion pattern '{pattern}': {message}")]
-    InvalidPattern { pattern: String, message: String },
     #[error("job was cancelled")]
     Cancelled,
 }

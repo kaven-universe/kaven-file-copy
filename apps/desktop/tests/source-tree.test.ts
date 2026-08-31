@@ -4,8 +4,8 @@ import {
   buildSourceTree,
   filterSourceEntries,
   hasPathDescendantOverride,
-  isPathExcluded,
-  setPathExcluded,
+  isPathIncluded,
+  setPathIncluded,
 } from "../src/source-tree";
 
 test("buildSourceTree groups entries by every path segment", () => {
@@ -36,37 +36,42 @@ test("buildSourceTree normalizes separators and sorts directories before files",
   assert.equal(tree[0].children[0].relativePath, "folder/child.txt");
 });
 
-test("a child can override an excluded parent and be checked again", () => {
-  const parentExcluded = setPathExcluded([], [], "cache", true);
-  assert.deepEqual(parentExcluded, { excluded: ["cache"], included: [] });
+test("an empty selection includes nothing", () => {
+  assert.equal(isPathIncluded("cache", [], []), false);
+  assert.equal(isPathIncluded("README.md", [], []), false);
+});
 
-  const childIncluded = setPathExcluded(
-    parentExcluded.excluded,
-    parentExcluded.included,
+test("a child can be deselected under a selected parent and selected again", () => {
+  const parentSelected = setPathIncluded([], [], "cache", true);
+  assert.deepEqual(parentSelected, { included: ["cache"], excluded: [] });
+
+  const childDeselected = setPathIncluded(
+    parentSelected.included,
+    parentSelected.excluded,
     "cache/keep",
     false,
   );
-  assert.deepEqual(childIncluded, { excluded: ["cache"], included: ["cache/keep"] });
+  assert.deepEqual(childDeselected, { included: ["cache"], excluded: ["cache/keep"] });
 
-  const childExcludedAgain = setPathExcluded(
-    childIncluded.excluded,
-    childIncluded.included,
+  const childSelectedAgain = setPathIncluded(
+    childDeselected.included,
+    childDeselected.excluded,
     "cache/keep",
     true,
   );
-  assert.deepEqual(childExcludedAgain, { excluded: ["cache"], included: [] });
+  assert.deepEqual(childSelectedAgain, { included: ["cache"], excluded: [] });
 });
 
-test("a deeper exclusion can override an included child", () => {
-  const state = setPathExcluded(
+test("a deeper selection can override a deselected child", () => {
+  const state = setPathIncluded(
     ["cache"],
     ["cache/keep"],
     "cache/keep/private",
     true,
   );
   assert.deepEqual(state, {
-    excluded: ["cache", "cache/keep/private"],
-    included: ["cache/keep"],
+    included: ["cache", "cache/keep/private"],
+    excluded: ["cache/keep"],
   });
 });
 
@@ -82,12 +87,12 @@ test("source entries filter by path and file or folder type", () => {
   assert.deepEqual(filterSourceEntries(entries, "files", "photos"), [entries[1]]);
 });
 
-test("list exclusion state matches parent and child overrides", () => {
-  const excluded = ["cache"];
-  const included = ["cache/keep"];
+test("list selection state matches parent and child overrides", () => {
+  const included = ["cache"];
+  const excluded = ["cache/keep"];
 
-  assert!(isPathExcluded("cache/drop.txt", excluded, included));
-  assert.equal(isPathExcluded("cache/keep/file.txt", excluded, included), false);
-  assert.equal(hasPathDescendantOverride("cache", excluded, included), true);
-  assert.equal(hasPathDescendantOverride("cache/keep", excluded, included), false);
+  assert!(isPathIncluded("cache/drop.txt", included, excluded));
+  assert.equal(isPathIncluded("cache/keep/file.txt", included, excluded), false);
+  assert.equal(hasPathDescendantOverride("cache", included, excluded), true);
+  assert.equal(hasPathDescendantOverride("cache/keep", included, excluded), false);
 });

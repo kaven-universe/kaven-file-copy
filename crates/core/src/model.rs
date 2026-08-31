@@ -99,17 +99,13 @@ impl EndpointConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilterConfig {
-    pub exclude: Vec<Exclusion>,
+    /// Relative paths selected for copying; each entry includes its subtree.
     #[serde(default)]
     pub include: Vec<String>,
+    /// Relative paths deselected as overrides beneath a selected parent.
+    #[serde(default)]
+    pub exclude: Vec<String>,
     pub include_hidden: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum Exclusion {
-    Path { value: String },
-    Glob { value: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

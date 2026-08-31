@@ -5,9 +5,9 @@ export interface SourceTreeNode extends SourceEntry {
   children: SourceTreeNode[];
 }
 
-export interface PathExclusionState {
-  excluded: string[];
+export interface PathSelectionState {
   included: string[];
+  excluded: string[];
 }
 
 export type SourceEntryTypeFilter = "all" | "folders" | "files";
@@ -63,55 +63,55 @@ function sortTree(nodes: SourceTreeNode[]) {
   nodes.forEach((node) => sortTree(node.children));
 }
 
-export function setPathExcluded(
-  excludedPaths: string[],
+export function setPathIncluded(
   includedPaths: string[],
+  excludedPaths: string[],
   path: string,
-  excluded: boolean,
-): PathExclusionState {
+  included: boolean,
+): PathSelectionState {
   const normalized = normalizeTreePath(path);
   const descendantPrefix = `${normalized}/`;
   const outsideSubtree = (candidate: string) => {
     const value = normalizeTreePath(candidate);
     return value !== normalized && !value.startsWith(descendantPrefix);
   };
-  const nextExcluded = excludedPaths.map(normalizeTreePath).filter(outsideSubtree);
   const nextIncluded = includedPaths.map(normalizeTreePath).filter(outsideSubtree);
-  const inheritedExcluded = isPathExcluded(normalized, nextExcluded, nextIncluded);
+  const nextExcluded = excludedPaths.map(normalizeTreePath).filter(outsideSubtree);
+  const inheritedIncluded = isPathIncluded(normalized, nextIncluded, nextExcluded);
 
-  if (excluded !== inheritedExcluded) {
-    (excluded ? nextExcluded : nextIncluded).push(normalized);
+  if (included !== inheritedIncluded) {
+    (included ? nextIncluded : nextExcluded).push(normalized);
   }
-  return { excluded: nextExcluded, included: nextIncluded };
+  return { included: nextIncluded, excluded: nextExcluded };
 }
 
 export function normalizeTreePath(path: string) {
   return path.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
 }
 
-export function isPathExcluded(
+export function isPathIncluded(
   path: string,
-  excludedPaths: Iterable<string>,
   includedPaths: Iterable<string>,
+  excludedPaths: Iterable<string>,
 ) {
   const normalized = normalizeTreePath(path);
-  const excludedDepth = deepestMatch([...excludedPaths].map(normalizeTreePath), normalized);
   const includedDepth = deepestMatch([...includedPaths].map(normalizeTreePath), normalized);
-  if (excludedDepth === undefined) return false;
-  if (includedDepth === undefined) return true;
-  return excludedDepth > includedDepth;
+  if (includedDepth === undefined) return false;
+  const excludedDepth = deepestMatch([...excludedPaths].map(normalizeTreePath), normalized);
+  if (excludedDepth === undefined) return true;
+  return includedDepth > excludedDepth;
 }
 
 export function hasPathDescendantOverride(
   path: string,
-  excludedPaths: Iterable<string>,
   includedPaths: Iterable<string>,
+  excludedPaths: Iterable<string>,
 ) {
   const normalized = normalizeTreePath(path);
   const prefix = `${normalized}/`;
-  const overrides = isPathExcluded(normalized, excludedPaths, includedPaths)
-    ? includedPaths
-    : excludedPaths;
+  const overrides = isPathIncluded(normalized, includedPaths, excludedPaths)
+    ? excludedPaths
+    : includedPaths;
   return [...overrides]
     .map(normalizeTreePath)
     .some((candidate) => candidate.startsWith(prefix));

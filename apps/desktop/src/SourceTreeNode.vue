@@ -4,33 +4,33 @@ import type { SourceTreeNode } from "./source-tree";
 
 const props = withDefaults(defineProps<{
   node: SourceTreeNode;
-  excludedPaths: ReadonlySet<string>;
   includedPaths: ReadonlySet<string>;
+  excludedPaths: ReadonlySet<string>;
   expandAll?: boolean;
   depth?: number;
-  ancestorExcluded?: boolean;
+  ancestorIncluded?: boolean;
 }>(), {
   depth: 0,
-  ancestorExcluded: false,
+  ancestorIncluded: false,
   expandAll: false,
 });
 
 const emit = defineEmits<{
-  toggleExcluded: [path: string, checked: boolean];
+  toggleIncluded: [path: string, checked: boolean];
 }>();
 
 const expanded = ref(props.expandAll);
 const hasChildren = computed(() => props.node.directory && props.node.children.length > 0);
-const directlyExcluded = computed(() => props.excludedPaths.has(props.node.relativePath));
 const directlyIncluded = computed(() => props.includedPaths.has(props.node.relativePath));
-const effectivelyExcluded = computed(() => {
-  if (directlyIncluded.value) return false;
-  if (directlyExcluded.value) return true;
-  return props.ancestorExcluded;
+const directlyExcluded = computed(() => props.excludedPaths.has(props.node.relativePath));
+const effectivelyIncluded = computed(() => {
+  if (directlyExcluded.value) return false;
+  if (directlyIncluded.value) return true;
+  return props.ancestorIncluded;
 });
 const hasDescendantOverride = computed(() => {
   const prefix = `${props.node.relativePath}/`;
-  const overrides = effectivelyExcluded.value ? props.includedPaths : props.excludedPaths;
+  const overrides = effectivelyIncluded.value ? props.excludedPaths : props.includedPaths;
   return [...overrides].some((path) => path.startsWith(prefix));
 });
 
@@ -42,12 +42,12 @@ function toggleExpansion() {
   expanded.value = !expanded.value;
 }
 
-function handleExclusion(event: Event) {
-  emit("toggleExcluded", props.node.relativePath, (event.target as HTMLInputElement).checked);
+function handleInclusion(event: Event) {
+  emit("toggleIncluded", props.node.relativePath, (event.target as HTMLInputElement).checked);
 }
 
-function forwardExclusion(path: string, checked: boolean) {
-  emit("toggleExcluded", path, checked);
+function forwardInclusion(path: string, checked: boolean) {
+  emit("toggleIncluded", path, checked);
 }
 </script>
 
@@ -57,7 +57,7 @@ function forwardExclusion(path: string, checked: boolean) {
     role="treeitem"
     :aria-expanded="hasChildren ? expanded : undefined"
   >
-    <div class="source-tree-row" :class="{ inherited: ancestorExcluded && !directlyIncluded && !directlyExcluded }">
+    <div class="source-tree-row" :class="{ inherited: ancestorIncluded && !directlyIncluded && !directlyExcluded }">
       <button
         v-if="hasChildren"
         class="tree-toggle"
@@ -72,10 +72,10 @@ function forwardExclusion(path: string, checked: boolean) {
       <input
         class="tree-checkbox"
         type="checkbox"
-        :checked="effectivelyExcluded"
+        :checked="effectivelyIncluded"
         :indeterminate="hasDescendantOverride"
-        :aria-label="`Exclude ${node.relativePath}`"
-        @change="handleExclusion"
+        :aria-label="`Include ${node.relativePath}`"
+        @change="handleInclusion"
       />
       <span class="source-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">
         {{ node.name }}
@@ -86,12 +86,12 @@ function forwardExclusion(path: string, checked: boolean) {
         v-for="child in node.children"
         :key="child.relativePath"
         :node="child"
-        :excluded-paths="excludedPaths"
         :included-paths="includedPaths"
+        :excluded-paths="excludedPaths"
         :expand-all="expandAll"
         :depth="depth + 1"
-        :ancestor-excluded="effectivelyExcluded"
-        @toggle-excluded="forwardExclusion"
+        :ancestor-included="effectivelyIncluded"
+        @toggle-included="forwardInclusion"
       />
     </ul>
   </li>

@@ -11,9 +11,9 @@ import {
   buildSourceTree,
   filterSourceEntries,
   hasPathDescendantOverride,
-  isPathExcluded,
+  isPathIncluded,
   normalizeTreePath,
-  setPathExcluded,
+  setPathIncluded,
   type SourceEntryTypeFilter,
   type SourceView,
 } from "./source-tree";
@@ -39,7 +39,7 @@ const previewAction = ref<PreviewActionFilter>("all");
 const previewView = ref<PreviewView>("list");
 const jobEvents = ref<Record<string, JobEvent[]>>({});
 const pathExclusions = computed(() => new Set(
-  selectedRule.value?.filters.exclude.filter((item) => item.kind === "path").map((item) => normalizeTreePath(item.value)) ?? [],
+  selectedRule.value?.filters.exclude.map(normalizeTreePath) ?? [],
 ));
 const pathInclusions = computed(() => new Set(
   selectedRule.value?.filters.include.map(normalizeTreePath) ?? [],
@@ -141,32 +141,24 @@ async function browseSource() {
   await act(async () => { sourceEntries.value = await api.listSourceEntries(selectedRule.value!); });
 }
 
-function toggleExcluded(path: string, checked: boolean) {
+function toggleIncluded(path: string, checked: boolean) {
   if (!selectedRule.value) return;
-  const globExclusions = selectedRule.value.filters.exclude.filter((item) => item.kind === "glob");
-  const state = setPathExcluded(
+  const state = setPathIncluded(
+    [...pathInclusions.value],
     [...pathExclusions.value],
-    selectedRule.value.filters.include,
     path,
     checked,
   );
-  selectedRule.value.filters.exclude = [
-    ...globExclusions,
-    ...state.excluded.map((value) => ({ kind: "path" as const, value })),
-  ];
   selectedRule.value.filters.include = state.included;
+  selectedRule.value.filters.exclude = state.excluded;
 }
 
-function sourceEntryExcluded(path: string) {
-  return isPathExcluded(path, pathExclusions.value, pathInclusions.value);
+function sourceEntryIncluded(path: string) {
+  return isPathIncluded(path, pathInclusions.value, pathExclusions.value);
 }
 
 function sourceEntryHasOverride(path: string) {
-  return hasPathDescendantOverride(path, pathExclusions.value, pathInclusions.value);
-}
-
-function addGlob() {
-  selectedRule.value?.filters.exclude.push({ kind: "glob", value: "**/*.tmp" });
+  return hasPathDescendantOverride(path, pathInclusions.value, pathExclusions.value);
 }
 
 async function persist() {
@@ -315,8 +307,8 @@ onMounted(async () => {
         <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
         <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">Automatic jobs run only while the desktop application is open.</p>
       </section>
-      <section class="card"><div class="toolbar"><h3>Exclusions</h3><span></span><button @click="addGlob">Add glob</button><button @click="browseSource">Browse source tree</button></div>
-        <div v-for="(item,index) in selectedRule.filters.exclude.filter(i => i.kind === 'glob')" :key="index" class="field-action"><input v-model="item.value" /><button @click="selectedRule.filters.exclude.splice(selectedRule.filters.exclude.indexOf(item),1)">Remove</button></div>
+      <section class="card"><div class="toolbar"><h3>Files to copy</h3><span></span><button @click="browseSource">Browse source tree</button></div>
+        <p class="hint">Check the files and folders to copy. Nothing is copied until you make a selection; unchecked entries are skipped.</p>
         <div v-if="sourceEntries.length" class="result-filters source-filters" role="search">
           <input v-model="sourceQuery" type="search" placeholder="Filter source path" aria-label="Filter source entries by path" />
           <select v-model="sourceType" aria-label="Filter source entries by type">
@@ -330,26 +322,26 @@ onMounted(async () => {
           </div>
           <small>{{ filteredSourceEntries.length }} of {{ sourceEntries.length }} entries</small>
         </div>
-        <ul v-if="filteredSourceEntries.length && sourceView === 'tree'" class="source-tree" role="tree" aria-label="Source exclusions">
+        <ul v-if="filteredSourceEntries.length && sourceView === 'tree'" class="source-tree" role="tree" aria-label="Files to copy">
           <SourceTreeNode
             v-for="node in sourceTree"
             :key="node.relativePath"
             :node="node"
-            :excluded-paths="pathExclusions"
             :included-paths="pathInclusions"
+            :excluded-paths="pathExclusions"
             :expand-all="sourceFilterActive"
-            @toggle-excluded="toggleExcluded"
+            @toggle-included="toggleIncluded"
           />
         </ul>
-        <ul v-else-if="filteredSourceEntries.length" class="source-list" aria-label="Source exclusions list">
+        <ul v-else-if="filteredSourceEntries.length" class="source-list" aria-label="Files to copy list">
           <li v-for="entry in filteredSourceEntries" :key="entry.relativePath">
             <label class="source-list-row">
               <input
                 type="checkbox"
-                :checked="sourceEntryExcluded(entry.relativePath)"
+                :checked="sourceEntryIncluded(entry.relativePath)"
                 :indeterminate="sourceEntryHasOverride(entry.relativePath)"
-                :aria-label="`Exclude ${entry.relativePath}`"
-                @change="toggleExcluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
+                :aria-label="`Include ${entry.relativePath}`"
+                @change="toggleIncluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
               />
               <span :title="entry.relativePath">{{ entry.relativePath }}</span>
               <small>{{ entry.directory ? 'Folder' : 'File' }}</small>

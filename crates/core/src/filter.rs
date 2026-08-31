@@ -1,72 +1,65 @@
-use std::path::{Component, Path};
+use std::path::Path;
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use crate::{KfcError, Result};
 
-use crate::{Exclusion, KfcError, Result};
-
-pub struct ExclusionMatcher {
-    excluded_paths: Vec<String>,
+/// Decides which source entries a copy rule selects.
+///
+/// A rule copies an entry only when it is explicitly selected: the entry (or
+/// one of its ancestors) appears in the rule's `include` list, and no deeper
+/// `exclude` override deselects it. An empty `include` list copies nothing, so
+/// the UI presents the source tree as "check the files you want to copy".
+pub struct InclusionMatcher {
     included_paths: Vec<String>,
-    globs: GlobSet,
+    excluded_paths: Vec<String>,
 }
 
-impl ExclusionMatcher {
-    pub fn new(exclusions: &[Exclusion], inclusions: &[String]) -> Result<Self> {
-        let mut excluded_paths = Vec::new();
-        let mut builder = GlobSetBuilder::new();
-        for exclusion in exclusions {
-            match exclusion {
-                Exclusion::Path { value } => excluded_paths.push(normalize_rule_path(value)?),
-                Exclusion::Glob { value } => {
-                    let normalized = value.replace('\\', "/");
-                    let glob =
-                        Glob::new(&normalized).map_err(|error| KfcError::InvalidPattern {
-                            pattern: value.clone(),
-                            message: error.to_string(),
-                        })?;
-                    builder.add(glob);
-                }
-            }
-        }
+impl InclusionMatcher {
+    pub fn new(inclusions: &[String], exclusions: &[String]) -> Result<Self> {
         let included_paths = inclusions
             .iter()
             .map(|value| normalize_rule_path(value))
             .collect::<Result<Vec<_>>>()?;
-        let globs = builder.build().map_err(|error| KfcError::InvalidPattern {
-            pattern: "<glob set>".into(),
-            message: error.to_string(),
-        })?;
+        let excluded_paths = exclusions
+            .iter()
+            .map(|value| normalize_rule_path(value))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            excluded_paths,
             included_paths,
-            globs,
+            excluded_paths,
         })
     }
 
-    pub fn is_excluded(&self, path: &Path) -> bool {
+    pub fn is_included(&self, path: &Path) -> bool {
         let normalized = normalize_relative_path(path);
-        self.is_excluded_normalized(&normalized)
+        self.is_included_normalized(&normalized)
     }
 
     pub fn should_descend(&self, path: &Path) -> bool {
         let normalized = normalize_relative_path(path);
-        if !self.is_excluded_normalized(&normalized) {
+        if self.included_paths.is_empty() {
+            return false;
+        }
+        if self.is_included_normalized(&normalized) {
             return true;
         }
+        // The directory is not selected itself, but a selected entry may live
+        // beneath it (for example an override that re-selects a child).
         let prefix = format!("{normalized}/");
-        self.included_paths
-            .iter()
-            .any(|included| included.starts_with(&prefix))
+        self.included_paths.iter().any(|included| {
+            included.starts_with(&prefix)
+                && deepest_match(&self.excluded_paths, included)
+                    .is_none_or(|excluded_depth| excluded_depth < included.len())
+        })
     }
 
-    fn is_excluded_normalized(&self, normalized: &str) -> bool {
-        let excluded_depth = deepest_match(&self.excluded_paths, normalized);
-        let included_depth = deepest_match(&self.included_paths, normalized);
-        match (excluded_depth, included_depth) {
-            (Some(excluded), Some(included)) => excluded > included,
-            (Some(_), None) => true,
-            (None, Some(_)) => false,
-            (None, None) => self.globs.is_match(normalized),
+    fn is_included_normalized(&self, normalized: &str) -> bool {
+        let included_depth = match deepest_match(&self.included_paths, normalized) {
+            Some(depth) => depth,
+            None => return false,
+        };
+        match deepest_match(&self.excluded_paths, normalized) {
+            Some(excluded_depth) => excluded_depth < included_depth,
+            None => true,
         }
     }
 }
@@ -96,7 +89,7 @@ fn normalize_rule_path(value: &str) -> Result<String> {
 pub fn normalize_relative_path(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
-            Component::Normal(value) => Some(value.to_string_lossy()),
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -108,82 +101,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn path_exclusion_includes_descendants() {
-        let matcher = ExclusionMatcher::new(
-            &[Exclusion::Path {
-                value: "cache".into(),
-            }],
-            &[],
-        )
-        .unwrap();
-        assert!(matcher.is_excluded(Path::new("cache")));
-        assert!(matcher.is_excluded(Path::new("cache/nested/a.txt")));
-        assert!(!matcher.is_excluded(Path::new("cache-other/a.txt")));
+    fn empty_selection_copies_nothing() {
+        let matcher = InclusionMatcher::new(&[], &[]).unwrap();
+        assert!(!matcher.is_included(Path::new("cache/a.txt")));
+        assert!(!matcher.is_included(Path::new("README.md")));
+        assert!(!matcher.should_descend(Path::new("cache")));
     }
 
     #[test]
-    fn glob_exclusion_uses_forward_slashes() {
-        let matcher = ExclusionMatcher::new(
-            &[Exclusion::Glob {
-                value: "**/*.tmp".into(),
-            }],
-            &[],
+    fn selected_path_includes_descendants() {
+        let matcher = InclusionMatcher::new(&["cache".into()], &[]).unwrap();
+        assert!(matcher.is_included(Path::new("cache")));
+        assert!(matcher.is_included(Path::new("cache/nested/a.txt")));
+        assert!(!matcher.is_included(Path::new("cache-other/a.txt")));
+        assert!(matcher.should_descend(Path::new("cache")));
+        assert!(matcher.should_descend(Path::new("cache/nested")));
+        assert!(!matcher.should_descend(Path::new("other")));
+    }
+
+    #[test]
+    fn deselecting_a_child_overrides_its_parent() {
+        let matcher = InclusionMatcher::new(&["cache".into()], &["cache/keep".into()]).unwrap();
+        assert!(matcher.is_included(Path::new("cache/drop.txt")));
+        assert!(!matcher.is_included(Path::new("cache/keep")));
+        assert!(!matcher.is_included(Path::new("cache/keep/file.txt")));
+        assert!(matcher.should_descend(Path::new("cache")));
+        assert!(!matcher.should_descend(Path::new("cache/keep")));
+    }
+
+    #[test]
+    fn deeper_selection_overrides_deselected_child() {
+        let matcher = InclusionMatcher::new(
+            &["cache".into(), "cache/keep/private".into()],
+            &["cache/keep".into()],
         )
         .unwrap();
-        assert!(matcher.is_excluded(Path::new("nested/work.tmp")));
-        assert!(!matcher.is_excluded(Path::new("nested/work.txt")));
+
+        assert!(!matcher.is_included(Path::new("cache/keep/public.txt")));
+        assert!(matcher.is_included(Path::new("cache/keep/private/secret.txt")));
+        assert!(matcher.should_descend(Path::new("cache/keep")));
     }
 
     #[test]
     fn escaping_path_is_rejected() {
-        assert!(
-            ExclusionMatcher::new(
-                &[Exclusion::Path {
-                    value: "../secret".into()
-                }],
-                &[],
-            )
-            .is_err()
-        );
+        assert!(InclusionMatcher::new(&["../secret".into()], &[]).is_err());
+        assert!(InclusionMatcher::new(&[], &["../secret".into()]).is_err());
     }
 
     #[test]
-    fn included_child_overrides_excluded_parent() {
-        let matcher = ExclusionMatcher::new(
-            &[Exclusion::Path {
-                value: "cache".into(),
-            }],
-            &["cache/keep".into()],
-        )
-        .unwrap();
-
-        assert!(matcher.is_excluded(Path::new("cache/drop.txt")));
-        assert!(!matcher.is_excluded(Path::new("cache/keep")));
-        assert!(!matcher.is_excluded(Path::new("cache/keep/file.txt")));
-        assert!(matcher.should_descend(Path::new("cache")));
-    }
-
-    #[test]
-    fn deeper_exclusion_overrides_included_child() {
-        let matcher = ExclusionMatcher::new(
-            &[
-                Exclusion::Path {
-                    value: "cache".into(),
-                },
-                Exclusion::Path {
-                    value: "cache/keep/private".into(),
-                },
-            ],
-            &["cache/keep".into()],
-        )
-        .unwrap();
-
-        assert!(!matcher.is_excluded(Path::new("cache/keep/public.txt")));
-        assert!(matcher.is_excluded(Path::new("cache/keep/private/secret.txt")));
-    }
-
-    #[test]
-    fn escaping_inclusion_is_rejected() {
-        assert!(ExclusionMatcher::new(&[], &["../secret".into()]).is_err());
+    fn descendant_of_selected_subtree_is_scanned() {
+        let matcher = InclusionMatcher::new(&["data".into()], &[]).unwrap();
+        assert!(matcher.should_descend(Path::new("data/sub")));
+        assert!(matcher.is_included(Path::new("data/sub/file.txt")));
     }
 }
