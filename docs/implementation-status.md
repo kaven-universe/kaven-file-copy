@@ -13,6 +13,7 @@ The V1 design is not complete. The manual local-copy workflow and its shared Rus
 - The desktop UI can create, edit, duplicate, enable/disable, delete, import, export, preview, and manually execute rules. Duplicate import IDs require an overwrite-or-copy decision.
 - Native source/destination dialogs, hierarchical path exclusions with child inclusion overrides, glob exclusions, job progress, cancellation, history, and basic event details are connected to Tauri commands.
 - The local engine validates source/destination relationships, scans files and directories, applies exclusions, plans incremental work, bounds concurrency, retries failures, preserves modification times, and uses destination-side temporary files.
+- A versioned release mode groups top-level source files by version branch, selects the newest or an exact version per family, and deploys each to a fixed destination name. Target names default to the files already existing in the destination directory, paired by name similarity, with manual add/remove/modify support; unmatched families fall back to a rename template.
 - Execution rejects lexical path traversal and existing destination links or junctions that resolve outside the destination root.
 - Rule JSON is strictly deserialized according to required V1 fields, rejects unknown fields, and enforces the published concurrency and retry limits.
 - File repositories persist rules, summaries, and JSON Lines events. A malformed rule or summary is skipped with a warning instead of hiding all healthy records.

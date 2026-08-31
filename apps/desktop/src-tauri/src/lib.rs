@@ -13,7 +13,7 @@ use std::{
 use chrono::Utc;
 use kfc_core::{
     CopyPlan, CopyRule, JobSummary, PlanAction, PlanProgressEvent, PlanProgressPhase,
-    ProgressEvent, TriggerConfig,
+    ProgressEvent, TriggerConfig, VersionedMapping,
 };
 use kfc_local_endpoint::LocalCopyEngine;
 use kfc_persistence::{FileRepositories, JobEvent, PersistenceError};
@@ -97,6 +97,13 @@ fn delete_rule(state: State<'_, AppState>, id: uuid::Uuid) -> Result<(), String>
 #[tauri::command]
 fn validate_rule(rule: CopyRule) -> Result<(), String> {
     validate_rule_full(&rule)
+}
+
+#[tauri::command]
+fn detect_versioned_mappings(rule: CopyRule) -> Result<Vec<VersionedMapping>, String> {
+    LocalCopyEngine
+        .detect_versioned_mappings(&rule)
+        .map_err(error)
 }
 
 #[tauri::command]
@@ -527,6 +534,7 @@ pub fn run() {
             save_rule,
             delete_rule,
             validate_rule,
+            detect_versioned_mappings,
             preview_rule,
             execute_rule,
             cancel_job,

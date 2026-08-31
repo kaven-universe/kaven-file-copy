@@ -10,6 +10,7 @@ Kaven File Copy is a lightweight cross-platform desktop application and CLI for 
 - Filterable list/tree relative-path exclusions, glob exclusions, and child inclusion overrides in the UI.
 - Versioned JSON rules with import/export and JSON Schema.
 - Incremental planning based on size and modification time, plus dry-run preview with live progress, filtering, and list/tree result views.
+- Versioned release copies that group top-level source files by version branch, pick one build per family (newest or exact version), and deploy it to a fixed destination name. Target names default to the files already present in the destination directory; mappings can be auto-detected and manually edited.
 - Bounded concurrent copying, retries, cooperative cancellation, and modification-time preservation.
 - Temporary-file commit with destination backup/restore during replacement.
 - Manual, debounced filesystem-watch, fixed-interval, and cron triggers.

@@ -7,6 +7,21 @@ export type TriggerConfig =
   | { type: "interval"; seconds: number }
   | { type: "cron"; expression: string; timezone?: string };
 
+export type VersionSelection = "latest" | "exact";
+export interface VersionedMapping {
+  sourcePattern: string;
+  targetName: string;
+  selection: VersionSelection;
+  version?: string;
+  versionPattern?: string;
+}
+export interface VersionedCopyOptions {
+  mappings: VersionedMapping[];
+  targetNameTemplate?: string;
+  versionPattern?: string;
+  renamePattern?: string;
+}
+
 export interface CopyRule {
   schemaVersion: 1;
   id: string;
@@ -16,13 +31,14 @@ export interface CopyRule {
   destination: EndpointConfig;
   filters: { exclude: Exclusion[]; include: string[]; includeHidden: boolean };
   copy: {
-    mode: "incremental";
+    mode: "incremental" | "versioned";
     compare: "size-and-mtime" | "size-only";
     overwrite: "if-changed" | "never" | "always";
     symlinks: "skip";
     preserveMtime: boolean;
     maxConcurrency: number;
     retryCount: number;
+    versioned: VersionedCopyOptions;
   };
   trigger: TriggerConfig;
 }
@@ -36,7 +52,7 @@ export interface PlanStats {
 }
 
 export type PlanAction = "create-directory" | "copy-file" | "skip" | "warn";
-export interface PlanItem { action: PlanAction; relativePath: string; size: number; reason: string }
+export interface PlanItem { action: PlanAction; relativePath: string; sourceRelativePath?: string; size: number; reason: string }
 export interface CopyPlan { ruleId: string; items: PlanItem[]; stats: PlanStats }
 export interface PlanProgressEvent {
   phase: "scanning" | "planning";

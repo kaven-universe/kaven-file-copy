@@ -273,6 +273,70 @@ apps/desktop/src/
 
 Paths are endpoint-specific configuration. The core interacts through the `Endpoint` interface and does not parse remote protocol details. A future version may add environment variables or named path mappings for portability; V1 performs no implicit path substitution.
 
+### 8.1a Versioned Release Copies
+
+`copy.mode` supports `incremental` (default) and `versioned`. Versioned mode maps versioned source files to fixed destination names, which is useful when a release folder contains several builds of the same binary and the deployment folder expects a single, stable file name.
+
+Example: copy the newest `EDM.DSP.Core` build from `D:\EDM_Release\DSP` into `...\Spider\Share\BIN` as `EDM.DSP.Core.dll`:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "018f6f2c-8f14-7b7a-8a04-8e7b1fe21c33",
+  "name": "DSP release copy",
+  "enabled": true,
+  "source": { "type": "local", "path": "D:/EDM_Release/DSP" },
+  "destination": { "type": "local", "path": "D:/Codes/azure/EDM/bin/AnyCPU/Debug/Spider/Share/BIN" },
+  "filters": { "exclude": [], "includeHidden": true },
+  "copy": {
+    "mode": "versioned",
+    "compare": "size-and-mtime",
+    "overwrite": "if-changed",
+    "symlinks": "skip",
+    "preserveMtime": true,
+    "maxConcurrency": 4,
+    "retryCount": 2,
+    "versioned": {
+      "mappings": [
+        {
+          "sourcePattern": "EDM.DSP.Core*.dll",
+          "targetName": "EDM.DSP.Core.dll",
+          "selection": "latest"
+        },
+        {
+          "sourcePattern": "EDM.DSP.Proxy*.dll",
+          "targetName": "bin/EDM.DSP.Proxy.dll",
+          "selection": "exact",
+          "version": "1.2.0"
+        }
+      ]
+    }
+  },
+  "trigger": { "type": "manual" }
+}
+```
+
+Each mapping has:
+
+- `sourcePattern`: a glob matched against source file names, for example `EDM.DSP.Core*.dll`.
+- `targetName`: the fixed destination file name (may include nested relative directories using `/` or `\`). It may contain placeholders filled from the chosen source file: `{name}` (base name with the version stripped), `{version}`, `{ext}`, and capture groups `{1}`, `{2}`, ... from the rule-level `renamePattern`.
+- `selection`: `latest` picks the highest version extracted from the matched file names; `exact` requires `version` and picks the file whose extracted version equals it.
+- `versionPattern` (optional): a custom regular expression used to extract the version from a file name. The first capture group wins, falling back to the whole match. When omitted, the first dotted-numeric token such as `1.2.3` or `1.2.3.4` is used.
+
+### Auto-Detection
+
+Versioned mode is flat: only top-level files of the source folder are considered (subfolders are ignored). When `versioned.mappings` is empty, mappings are derived automatically:
+
+1. Source files are grouped by version branch — the base name with the version token stripped (`80R_12.1.8.72.bin` -> base `80R`), and the newest version of each family wins. Unversioned files are ignored.
+2. Target names default to the files that already exist in the destination directory, paired by name similarity: the trailing alphabetic code of each group (`80R` -> `R`, `80Ti` -> `Ti`) is matched against the destination file stems, preferring exact trailing matches and longer codes first (so `80SG` wins over `80S`). This makes `80R_12.1.8.72.bin` deploy as `EDM.BIN0003R.dll` when that file already exists in the destination.
+3. Families without a destination match fall back to `versioned.targetNameTemplate` (default `{name}.{ext}`) so nothing is silently dropped; these rows remain fully editable.
+
+The UI *Detect mappings* command returns this suggested mapping list so users can review, add, remove, or modify target names before saving. The same placeholders remain available in explicit mappings and templates: `{name}`, `{version}`, `{ext}`, and capture groups `{1}`, `{2}`, ... from `renamePattern`.
+
+Rules of selection: a single unversioned match can be copied as-is (useful for plain single-file copies). Multiple unversioned matches are ambiguous and rejected. A mapping whose pattern matches nothing produces a plan warning instead of failing the whole job, so a partially assembled release can still be deployed with visible feedback. Exact-version requests that cannot be satisfied are planning errors. Auto-derived mappings that collide on the same target name are rejected as duplicate targets.
+
+Versions are compared component-wise with numeric awareness (`2.0.0` is newer than `1.10.0`), leading `v` prefixes are ignored, textual suffixes sort below release builds (`1.0.0` is newer than `1.0.0-beta`), and trailing zero components compare equal (`1.0` equals `1.0.0`).
+
 ### 8.2 Endpoint Abstraction
 
 The abstraction must not assume that every backend supports all local-filesystem semantics. Capabilities should be explicit:
