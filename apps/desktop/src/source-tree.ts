@@ -10,21 +10,18 @@ export interface PathSelectionState {
   excluded: string[];
 }
 
-export type SourceEntryTypeFilter = "all" | "folders" | "files";
 export type SourceView = "list" | "tree";
+export type SourceSortKey = "name" | "size" | "modified";
+export type SortDirection = "asc" | "desc";
+export interface SourceSort {
+  key: SourceSortKey;
+  direction: SortDirection;
+}
 
-export function filterSourceEntries(
-  entries: SourceEntry[],
-  type: SourceEntryTypeFilter,
-  query: string,
-) {
+export function filterSourceEntries(entries: SourceEntry[], query: string) {
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  return entries.filter((entry) => {
-    if (type === "folders" && !entry.directory) return false;
-    if (type === "files" && entry.directory) return false;
-    return !normalizedQuery
-      || normalizeTreePath(entry.relativePath).toLocaleLowerCase().includes(normalizedQuery);
-  });
+  return entries.filter((entry) => !normalizedQuery
+    || normalizeTreePath(entry.relativePath).toLocaleLowerCase().includes(normalizedQuery));
 }
 
 export function buildSourceTree(entries: SourceEntry[]): SourceTreeNode[] {
@@ -38,14 +35,26 @@ export function buildSourceTree(entries: SourceEntry[]): SourceTreeNode[] {
 
     parts.forEach((name, index) => {
       relativePath = relativePath ? `${relativePath}/${name}` : name;
-      const directory = index < parts.length - 1 || entry.directory;
+      const final = index === parts.length - 1;
+      const directory = !final || entry.directory;
       let node = nodes.get(relativePath);
       if (!node) {
-        node = { name, relativePath, directory, children: [] };
+        node = {
+          name,
+          relativePath,
+          directory,
+          size: final ? entry.size : 0,
+          modified: final ? entry.modified : null,
+          children: [],
+        };
         nodes.set(relativePath, node);
         children.push(node);
-      } else if (directory) {
-        node.directory = true;
+      } else {
+        if (directory) node.directory = true;
+        if (final) {
+          node.size = entry.size;
+          node.modified = entry.modified;
+        }
       }
       children = node.children;
     });
@@ -61,6 +70,56 @@ function sortTree(nodes: SourceTreeNode[]) {
     return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
   });
   nodes.forEach((node) => sortTree(node.children));
+}
+
+export function sortSourceEntries(entries: SourceEntry[], sort: SourceSort): SourceEntry[] {
+  return [...entries].sort((left, right) => {
+    let result = 0;
+    switch (sort.key) {
+      case "size":
+        result = (left.size ?? 0) - (right.size ?? 0);
+        break;
+      case "modified":
+        result = (left.modified ?? 0) - (right.modified ?? 0);
+        break;
+      default:
+        result = compareNames(left, right);
+        break;
+    }
+    if (result === 0) result = compareNames(left, right);
+    return sort.direction === "desc" ? -result : result;
+  });
+}
+
+function compareNames(left: SourceEntry, right: SourceEntry) {
+  return entryName(left).localeCompare(entryName(right), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function entryName(entry: SourceEntry) {
+  const normalized = normalizeTreePath(entry.relativePath);
+  const index = normalized.lastIndexOf("/");
+  return index === -1 ? normalized : normalized.slice(index + 1);
+}
+
+export function formatBytes(bytes: number | undefined | null) {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = -1;
+  do {
+    value /= 1024;
+    unit += 1;
+  } while (value >= 1024 && unit < units.length - 1);
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+export function formatModified(modified: number | null | undefined) {
+  if (modified === null || modified === undefined) return "—";
+  const date = new Date(modified);
+  if (Number.isNaN(date.getTime())) return "—";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export function setPathIncluded(

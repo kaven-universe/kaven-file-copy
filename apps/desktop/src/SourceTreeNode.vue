@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { SourceTreeNode } from "./source-tree";
+import { formatBytes, formatModified, type SourceTreeNode } from "./source-tree";
 
 const props = withDefaults(defineProps<{
   node: SourceTreeNode;
@@ -80,6 +80,9 @@ function forwardInclusion(path: string, checked: boolean) {
       <span class="source-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">
         {{ node.name }}
       </span>
+      <small class="source-tree-meta">
+        <template v-if="!node.directory">{{ formatBytes(node.size) }} · </template>{{ formatModified(node.modified) }}
+      </small>
     </div>
     <ul v-if="hasChildren && expanded" class="source-tree-children" role="group">
       <SourceTreeNode
