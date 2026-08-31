@@ -10,12 +10,17 @@ import SourceTreeNode from "./SourceTreeNode.vue";
 import {
   buildSourceTree,
   filterSourceEntries,
+  formatBytes,
+  formatModified,
   hasPathDescendantOverride,
   isPathIncluded,
   normalizeTreePath,
   setPathIncluded,
-  type SourceEntryTypeFilter,
+  sortSourceEntries,
+  type SourceSort,
+  type SourceSortKey,
   type SourceView,
+  type SortDirection,
 } from "./source-tree";
 import type { CopyPlan, CopyRule, JobEvent, JobSummary, PlanProgressEvent, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
 
@@ -27,8 +32,9 @@ const selectedRule = ref<CopyRule | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
-const sourceType = ref<SourceEntryTypeFilter>("all");
 const sourceView = ref<SourceView>("tree");
+const sourceSortKey = ref<SourceSortKey>("name");
+const sourceSortDirection = ref<SortDirection>("asc");
 const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
 const busy = ref(false);
 const message = ref("");
@@ -46,13 +52,16 @@ const pathInclusions = computed(() => new Set(
 ));
 const filteredSourceEntries = computed(() => filterSourceEntries(
   sourceEntries.value,
-  sourceType.value,
   sourceQuery.value,
 ));
+const sourceFiles = computed(() => filteredSourceEntries.value.filter((entry) => !entry.directory));
+const sourceSort = computed<SourceSort>(() => ({
+  key: sourceSortKey.value,
+  direction: sourceSortDirection.value,
+}));
+const sortedSourceFiles = computed(() => sortSourceEntries(sourceFiles.value, sourceSort.value));
 const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value));
-const sourceFilterActive = computed(() => (
-  sourceType.value !== "all" || sourceQuery.value.trim().length > 0
-));
+const sourceFilterActive = computed(() => sourceQuery.value.trim().length > 0);
 const filteredPlanItems = computed(() => filterPlanItems(
   plan.value?.items ?? [],
   previewAction.value,
@@ -102,7 +111,6 @@ function edit(rule?: CopyRule) {
   selectedRule.value = reactive(copy);
   sourceEntries.value = [];
   sourceQuery.value = "";
-  sourceType.value = "all";
   plan.value = null;
   previewQuery.value = "";
   previewAction.value = "all";
@@ -124,7 +132,6 @@ async function choosePath(kind: "source" | "destination", directory: boolean) {
 function clearSourceBrowser() {
   sourceEntries.value = [];
   sourceQuery.value = "";
-  sourceType.value = "all";
 }
 
 function changeTrigger(event: Event) {
@@ -159,6 +166,21 @@ function sourceEntryIncluded(path: string) {
 
 function sourceEntryHasOverride(path: string) {
   return hasPathDescendantOverride(path, pathInclusions.value, pathExclusions.value);
+}
+
+function sortFilesBy(key: SourceSortKey) {
+  if (sourceSortKey.value === key) {
+    sourceSortDirection.value = sourceSortDirection.value === "asc" ? "desc" : "asc";
+  } else {
+    sourceSortKey.value = key;
+    sourceSortDirection.value = "asc";
+  }
+}
+
+function ariaSort(key: SourceSortKey) {
+  return sourceSortKey.value === key
+    ? (sourceSortDirection.value === "asc" ? "ascending" : "descending")
+    : "none";
 }
 
 async function persist() {
@@ -311,18 +333,13 @@ onMounted(async () => {
         <p class="hint">Check the files and folders to copy. Nothing is copied until you make a selection; unchecked entries are skipped.</p>
         <div v-if="sourceEntries.length" class="result-filters source-filters" role="search">
           <input v-model="sourceQuery" type="search" placeholder="Filter source path" aria-label="Filter source entries by path" />
-          <select v-model="sourceType" aria-label="Filter source entries by type">
-            <option value="all">All entries</option>
-            <option value="folders">Folders</option>
-            <option value="files">Files</option>
-          </select>
           <div class="view-switch" role="group" aria-label="Source layout">
             <button type="button" :class="{ active: sourceView === 'list' }" :aria-pressed="sourceView === 'list'" @click="sourceView = 'list'">List</button>
             <button type="button" :class="{ active: sourceView === 'tree' }" :aria-pressed="sourceView === 'tree'" @click="sourceView = 'tree'">Tree</button>
           </div>
-          <small>{{ filteredSourceEntries.length }} of {{ sourceEntries.length }} entries</small>
+          <small>{{ sourceView === 'list' ? `${sortedSourceFiles.length} of ${sourceFiles.length} files` : `${filteredSourceEntries.length} of ${sourceEntries.length} entries` }}</small>
         </div>
-        <ul v-if="filteredSourceEntries.length && sourceView === 'tree'" class="source-tree" role="tree" aria-label="Files to copy">
+        <ul v-if="sourceView === 'tree' && filteredSourceEntries.length" class="source-tree" role="tree" aria-label="Files to copy">
           <SourceTreeNode
             v-for="node in sourceTree"
             :key="node.relativePath"
@@ -333,22 +350,53 @@ onMounted(async () => {
             @toggle-included="toggleIncluded"
           />
         </ul>
-        <ul v-else-if="filteredSourceEntries.length" class="source-list" aria-label="Files to copy list">
-          <li v-for="entry in filteredSourceEntries" :key="entry.relativePath">
-            <label class="source-list-row">
-              <input
-                type="checkbox"
-                :checked="sourceEntryIncluded(entry.relativePath)"
-                :indeterminate="sourceEntryHasOverride(entry.relativePath)"
-                :aria-label="`Include ${entry.relativePath}`"
-                @change="toggleIncluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
-              />
-              <span :title="entry.relativePath">{{ entry.relativePath }}</span>
-              <small>{{ entry.directory ? 'Folder' : 'File' }}</small>
-            </label>
-          </li>
-        </ul>
-        <p v-else-if="sourceEntries.length" class="filter-empty">No source entries match the current filter.</p>
+        <div v-else-if="sourceView === 'list' && sortedSourceFiles.length" class="source-list-wrap">
+          <table class="source-list">
+            <colgroup>
+              <col />
+              <col class="size-col" />
+              <col class="modified-col" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th :aria-sort="ariaSort('name')">
+                  <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'name' }" @click="sortFilesBy('name')">
+                    Name <span v-if="sourceSortKey === 'name'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                  </button>
+                </th>
+                <th class="num" :aria-sort="ariaSort('size')">
+                  <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'size' }" @click="sortFilesBy('size')">
+                    Size <span v-if="sourceSortKey === 'size'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                  </button>
+                </th>
+                <th class="num" :aria-sort="ariaSort('modified')">
+                  <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'modified' }" @click="sortFilesBy('modified')">
+                    Modified <span v-if="sourceSortKey === 'modified'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="entry in sortedSourceFiles" :key="entry.relativePath">
+                <td>
+                  <label class="source-list-name">
+                    <input
+                      type="checkbox"
+                      :checked="sourceEntryIncluded(entry.relativePath)"
+                      :indeterminate="sourceEntryHasOverride(entry.relativePath)"
+                      :aria-label="`Include ${entry.relativePath}`"
+                      @change="toggleIncluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span :title="entry.relativePath">{{ entry.relativePath }}</span>
+                  </label>
+                </td>
+                <td class="num">{{ formatBytes(entry.size) }}</td>
+                <td class="num">{{ formatModified(entry.modified) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-else-if="sourceEntries.length" class="filter-empty">{{ sourceView === 'list' ? 'No files match the current filter.' : 'No source entries match the current filter.' }}</p>
       </section>
       <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? 'Previewing...' : 'Preview' }}</button></div>
         <div v-if="previewProgress" class="preview-progress" role="status" aria-live="polite">

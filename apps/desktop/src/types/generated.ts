@@ -57,5 +57,10 @@ export interface JobEvent {
   timestamp: string; level: string; phase: string; relativePath?: string;
   operation: string; result: string; message?: string;
 }
-export interface SourceEntry { relativePath: string; directory: boolean }
+export interface SourceEntry {
+  relativePath: string;
+  directory: boolean;
+  size: number;
+  modified: number | null;
+}
 export interface RecentPaths { sources: string[]; destinations: string[] }
