@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,62 @@ impl CopyRule {
             }
             _ => {}
         }
+        if self.copy.mode == CopyMode::Versioned {
+            self.validate_versioned_copy()?;
+        }
+        Ok(())
+    }
+
+    fn validate_versioned_copy(&self) -> crate::Result<()> {
+        let versioned = &self.copy.versioned;
+        if versioned.mappings.is_empty() {
+            return Err(crate::KfcError::InvalidRule(
+                "versioned mode requires at least one mapping".into(),
+            ));
+        }
+        let mut target_names = HashSet::new();
+        for mapping in &versioned.mappings {
+            if mapping.source_pattern.trim().is_empty() {
+                return Err(crate::KfcError::InvalidRule(
+                    "versioned mapping sourcePattern must not be empty".into(),
+                ));
+            }
+            globset::Glob::new(&mapping.source_pattern.replace('\\', "/")).map_err(|error| {
+                crate::KfcError::InvalidPattern {
+                    pattern: mapping.source_pattern.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+            if mapping.target_name.trim().is_empty() {
+                return Err(crate::KfcError::InvalidRule(
+                    "versioned mapping targetName must not be empty".into(),
+                ));
+            }
+            let target = crate::normalize_target_name(&mapping.target_name)?;
+            if !target_names.insert(target.clone()) {
+                return Err(crate::KfcError::InvalidRule(format!(
+                    "versioned mappings produce duplicate target file '{target}'"
+                )));
+            }
+            if mapping.selection == VersionSelection::Exact {
+                let version = mapping.version.as_deref().ok_or_else(|| {
+                    crate::KfcError::InvalidRule(format!(
+                        "versioned mapping '{target}' selects an exact version but version is not set"
+                    ))
+                })?;
+                if crate::parse_version(version).is_none() {
+                    return Err(crate::KfcError::InvalidRule(format!(
+                        "versioned mapping '{target}' has an unparsable exact version '{version}'"
+                    )));
+                }
+            }
+            if let Some(pattern) = &mapping.version_pattern {
+                regex::Regex::new(pattern).map_err(|error| crate::KfcError::InvalidPattern {
+                    pattern: pattern.clone(),
+                    message: error.to_string(),
+                })?;
+            }
+        }
         Ok(())
     }
 }
@@ -122,6 +178,8 @@ pub struct CopyOptions {
     pub preserve_mtime: bool,
     pub max_concurrency: usize,
     pub retry_count: u32,
+    #[serde(default)]
+    pub versioned: VersionedCopyOptions,
 }
 
 impl Default for CopyOptions {
@@ -134,6 +192,7 @@ impl Default for CopyOptions {
             preserve_mtime: true,
             max_concurrency: default_concurrency(),
             retry_count: default_retries(),
+            versioned: VersionedCopyOptions::default(),
         }
     }
 }
@@ -150,6 +209,43 @@ const fn default_retries() -> u32 {
 pub enum CopyMode {
     #[default]
     Incremental,
+    Versioned,
+}
+
+/// Configuration used when [`CopyMode::Versioned`] is selected. The source
+/// folder may contain several releases of the same binary; each mapping picks
+/// one matching file and copies it to a fixed destination file name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VersionedCopyOptions {
+    pub mappings: Vec<VersionedMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VersionedMapping {
+    /// Glob matched against source file names, e.g. `EDM.DSP.Core*.dll`.
+    pub source_pattern: String,
+    /// Fixed destination file name, e.g. `EDM.DSP.Core.dll`. May contain
+    /// nested relative directories such as `bin/EDM.DSP.Core.dll`.
+    pub target_name: String,
+    /// Whether to pick the newest version or a specific version.
+    pub selection: VersionSelection,
+    /// Required version when `selection` is `exact`.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Optional custom regular expression used to extract the version from a
+    /// file name. Defaults to the first dotted-numeric token.
+    #[serde(default)]
+    pub version_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum VersionSelection {
+    #[default]
+    Latest,
+    Exact,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -209,7 +305,13 @@ pub struct CopyPlan {
 #[serde(rename_all = "camelCase")]
 pub struct PlanItem {
     pub action: PlanAction,
+    /// Destination-relative path (also the source-relative path when
+    /// `source_relative_path` is absent).
     pub relative_path: PathBuf,
+    /// Source-relative path when it differs from the destination path, such
+    /// as a versioned source file copied to a fixed destination name.
+    #[serde(default)]
+    pub source_relative_path: Option<PathBuf>,
     pub size: u64,
     pub reason: String,
 }
@@ -346,6 +448,79 @@ mod tests {
             rule.validate_structure(),
             Err(crate::KfcError::InvalidRule(_))
         ));
+    }
+
+    #[test]
+    fn v1_deserialization_defaults_missing_versioned_config() {
+        let mut value = serde_json::to_value(test_rule()).unwrap();
+        value["copy"].as_object_mut().unwrap().remove("versioned");
+        let rule = serde_json::from_value::<CopyRule>(value).unwrap();
+        assert_eq!(rule.copy.mode, CopyMode::Incremental);
+        assert!(rule.copy.versioned.mappings.is_empty());
+    }
+
+    #[test]
+    fn versioned_mode_requires_a_mapping() {
+        let mut rule = test_rule();
+        rule.copy.mode = CopyMode::Versioned;
+        assert!(matches!(
+            rule.validate_structure(),
+            Err(crate::KfcError::InvalidRule(_))
+        ));
+    }
+
+    #[test]
+    fn versioned_exact_selection_requires_a_parseable_version() {
+        let mut rule = test_rule();
+        rule.copy.mode = CopyMode::Versioned;
+        rule.copy.versioned = VersionedCopyOptions {
+            mappings: vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Core*.dll".into(),
+                target_name: "EDM.DSP.Core.dll".into(),
+                selection: VersionSelection::Exact,
+                version: None,
+                version_pattern: None,
+            }],
+        };
+        assert!(matches!(
+            rule.validate_structure(),
+            Err(crate::KfcError::InvalidRule(_))
+        ));
+
+        rule.copy.versioned.mappings[0].version = Some("not-a-version".into());
+        assert!(matches!(
+            rule.validate_structure(),
+            Err(crate::KfcError::InvalidRule(_))
+        ));
+    }
+
+    #[test]
+    fn versioned_rule_round_trips_with_its_mappings() {
+        let mut rule = test_rule();
+        rule.copy.mode = CopyMode::Versioned;
+        rule.copy.versioned = VersionedCopyOptions {
+            mappings: vec![
+                VersionedMapping {
+                    source_pattern: "EDM.DSP.Core*.dll".into(),
+                    target_name: "EDM.DSP.Core.dll".into(),
+                    selection: VersionSelection::Latest,
+                    version: None,
+                    version_pattern: None,
+                },
+                VersionedMapping {
+                    source_pattern: "EDM.DSP.Proxy*.dll".into(),
+                    target_name: "bin/EDM.DSP.Proxy.dll".into(),
+                    selection: VersionSelection::Exact,
+                    version: Some("1.2.0".into()),
+                    version_pattern: Some(r"v(\d+\.\d+\.\d+)".into()),
+                },
+            ],
+        };
+        rule.validate_structure().unwrap();
+
+        let round_tripped: CopyRule =
+            serde_json::from_value(serde_json::to_value(&rule).unwrap()).unwrap();
+        assert_eq!(round_tripped, rule);
     }
 
     #[test]

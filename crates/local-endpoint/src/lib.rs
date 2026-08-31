@@ -17,10 +17,12 @@ use std::{
 
 use chrono::Utc;
 use filetime::FileTime;
+use globset::Glob;
 use kfc_core::{
-    CompareStrategy, CopyPlan, CopyRule, ExclusionMatcher, FileError, IoResultExt, JobStatus,
-    JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
-    PlanProgressPhase, PlanStats, ProgressEvent, Result,
+    CompareStrategy, CopyMode, CopyPlan, CopyRule, ExclusionMatcher, FileError, IoResultExt,
+    JobStatus, JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
+    PlanProgressPhase, PlanStats, ProgressEvent, Result, VersionSelection, extract_version,
+    normalize_target_name, parse_version,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -79,6 +81,9 @@ impl LocalCopyEngine {
         F: FnMut(&PlanProgressEvent),
     {
         let paths = self.validate_rule(rule)?;
+        if rule.copy.mode == CopyMode::Versioned {
+            return self.plan_versioned_internal(rule, &paths, &mut progress);
+        }
         let matcher = ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
         let mut items = Vec::new();
         let mut stats = PlanStats::default();
@@ -126,7 +131,10 @@ impl LocalCopyEngine {
             {
                 self.plan_file(
                     rule,
-                    &paths.source,
+                    PlannedSource {
+                        absolute: &paths.source,
+                        relative: None,
+                    },
                     relative,
                     &paths.destination,
                     &mut items,
@@ -217,6 +225,7 @@ impl LocalCopyEngine {
                     items.push(PlanItem {
                         action: PlanAction::Warn,
                         relative_path: relative.to_owned(),
+                        source_relative_path: None,
                         size: 0,
                         reason: "symbolic link skipped by policy".into(),
                     });
@@ -227,6 +236,7 @@ impl LocalCopyEngine {
                         items.push(PlanItem {
                             action: PlanAction::CreateDirectory,
                             relative_path: relative.to_owned(),
+                            source_relative_path: None,
                             size: 0,
                             reason: "destination directory does not exist".into(),
                         });
@@ -234,7 +244,10 @@ impl LocalCopyEngine {
                 } else if file_type.is_file() {
                     self.plan_file(
                         rule,
-                        entry.path(),
+                        PlannedSource {
+                            absolute: entry.path(),
+                            relative: None,
+                        },
                         relative,
                         &paths.destination,
                         &mut items,
@@ -260,16 +273,131 @@ impl LocalCopyEngine {
         })
     }
 
+    /// Plans a `versioned` copy: scans the source tree once, then for every
+    /// configured mapping picks one matching file (newest version, an exact
+    /// version, or the single match) and maps it to a fixed destination name.
+    fn plan_versioned_internal<F>(
+        &self,
+        rule: &CopyRule,
+        paths: &ValidatedPaths,
+        progress: &mut Option<F>,
+    ) -> Result<CopyPlan>
+    where
+        F: FnMut(&PlanProgressEvent),
+    {
+        let matcher = ExclusionMatcher::new(&rule.filters.exclude, &rule.filters.include)?;
+        let total_entries = if progress.is_some() {
+            let mut total = 0;
+            for entry in WalkDir::new(&paths.source)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| should_visit(entry, &paths.source, rule, &matcher))
+            {
+                let entry = entry.map_err(|error| {
+                    KfcError::InvalidRule(format!("source scan failed: {error}"))
+                })?;
+                if entry.path() != paths.source {
+                    total += 1;
+                }
+            }
+            Some(total)
+        } else {
+            None
+        };
+
+        let mut candidates: Vec<(PathBuf, String)> = Vec::new();
+        let mut completed_entries = 0;
+        for entry in WalkDir::new(&paths.source)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| should_visit(entry, &paths.source, rule, &matcher))
+        {
+            let entry = entry
+                .map_err(|error| KfcError::InvalidRule(format!("source scan failed: {error}")))?;
+            if entry.path() == paths.source {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&paths.source)
+                .map_err(|_| KfcError::PathEscape(entry.path().display().to_string()))?;
+            if entry.file_type().is_file() {
+                candidates.push((
+                    relative.to_owned(),
+                    entry.file_name().to_string_lossy().into_owned(),
+                ));
+            }
+            report_completed_entry(progress, &mut completed_entries, total_entries, relative);
+        }
+
+        let mut items = Vec::new();
+        let mut stats = PlanStats::default();
+        for mapping in &rule.copy.versioned.mappings {
+            let glob = Glob::new(&mapping.source_pattern.replace('\\', "/"))
+                .map_err(|error| KfcError::InvalidPattern {
+                    pattern: mapping.source_pattern.clone(),
+                    message: error.to_string(),
+                })?
+                .compile_matcher();
+            let matched = candidates
+                .iter()
+                .filter(|(_, name)| glob.is_match(name))
+                .collect::<Vec<_>>();
+            let target_relative = PathBuf::from(normalize_target_name(&mapping.target_name)?);
+            let Some(chosen) = select_versioned_candidate(
+                &matched,
+                &mapping.selection,
+                mapping.version.as_deref(),
+                mapping.version_pattern.as_deref(),
+            )?
+            else {
+                stats.warnings += 1;
+                items.push(PlanItem {
+                    action: PlanAction::Warn,
+                    relative_path: target_relative,
+                    source_relative_path: None,
+                    size: 0,
+                    reason: format!(
+                        "no source file matches pattern '{}'",
+                        mapping.source_pattern
+                    ),
+                });
+                continue;
+            };
+            let source_absolute = paths.source.join(&chosen.0);
+            self.plan_file(
+                rule,
+                PlannedSource {
+                    absolute: &source_absolute,
+                    relative: Some(&chosen.0),
+                },
+                &target_relative,
+                &paths.destination,
+                &mut items,
+                &mut stats,
+            )?;
+        }
+
+        Ok(CopyPlan {
+            rule_id: rule.id,
+            created_at: Utc::now(),
+            source_root: paths.source.clone(),
+            destination_root: paths.destination.clone(),
+            items,
+            stats,
+        })
+    }
+
     fn plan_file(
         &self,
         rule: &CopyRule,
-        source: &Path,
+        source: PlannedSource<'_>,
         relative: &Path,
         destination_root: &Path,
         items: &mut Vec<PlanItem>,
         stats: &mut PlanStats,
     ) -> Result<()> {
-        let source_metadata = fs::metadata(source).at(source)?;
+        let source_metadata = fs::metadata(source.absolute).at(source.absolute)?;
         let target = destination_root.join(relative);
         let (action, reason) = match fs::metadata(&target) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
@@ -325,6 +453,7 @@ impl LocalCopyEngine {
         items.push(PlanItem {
             action,
             relative_path: relative.to_owned(),
+            source_relative_path: source.relative.map(Path::to_owned),
             size: source_metadata.len(),
             reason,
         });
@@ -390,7 +519,12 @@ impl LocalCopyEngine {
                             break;
                         };
                         let result = (|| {
-                            let source = safe_join(source_root, &item.relative_path)?;
+                            let source = safe_join(
+                                source_root,
+                                item.source_relative_path
+                                    .as_deref()
+                                    .unwrap_or(&item.relative_path),
+                            )?;
                             let target = safe_join(destination_root, &item.relative_path)?;
                             copy_with_retries(
                                 &source,
@@ -488,6 +622,61 @@ fn report_completed_entry<F>(
     );
 }
 
+/// Selects the single candidate file a versioned mapping should copy.
+/// Returns `None` when nothing matched the mapping pattern.
+fn select_versioned_candidate<'a>(
+    candidates: &[&'a (PathBuf, String)],
+    selection: &VersionSelection,
+    exact_version: Option<&str>,
+    version_pattern: Option<&str>,
+) -> Result<Option<&'a (PathBuf, String)>> {
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    match selection {
+        VersionSelection::Latest => {
+            let mut versioned = candidates
+                .iter()
+                .filter_map(|candidate| {
+                    extract_version(&candidate.1, version_pattern)
+                        .and_then(|text| parse_version(&text))
+                        .map(|parsed| (*candidate, parsed))
+                })
+                .collect::<Vec<_>>();
+            versioned.sort_by(|(_, a), (_, b)| b.cmp(a));
+            if let Some((candidate, _)) = versioned.first() {
+                Ok(Some(candidate))
+            } else if candidates.len() == 1 {
+                Ok(Some(candidates[0]))
+            } else {
+                Err(KfcError::InvalidRule(
+                    "multiple source files match the pattern but none contains a parseable version"
+                        .into(),
+                ))
+            }
+        }
+        VersionSelection::Exact => {
+            let requested = exact_version.ok_or_else(|| {
+                KfcError::InvalidRule("exact version selection requires a version".into())
+            })?;
+            let requested_parsed = parse_version(requested).ok_or_else(|| {
+                KfcError::InvalidRule(format!("unparsable exact version '{requested}'"))
+            })?;
+            for candidate in candidates {
+                if let Some(extracted) = extract_version(&candidate.1, version_pattern)
+                    .and_then(|text| parse_version(&text))
+                    && extracted == requested_parsed
+                {
+                    return Ok(Some(candidate));
+                }
+            }
+            Err(KfcError::InvalidRule(format!(
+                "no source file has the exact version '{requested}'"
+            )))
+        }
+    }
+}
+
 fn should_visit(
     entry: &walkdir::DirEntry,
     source: &Path,
@@ -517,6 +706,13 @@ pub struct ValidatedPaths {
     pub source: PathBuf,
     pub destination: PathBuf,
     pub source_is_file: bool,
+}
+
+/// The source file a plan entry reads from. `relative` is only set when the
+/// source path differs from the destination path (versioned copies).
+struct PlannedSource<'a> {
+    absolute: &'a Path,
+    relative: Option<&'a Path>,
 }
 
 fn modified(metadata: &fs::Metadata) -> Option<SystemTime> {
@@ -640,7 +836,10 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{EndpointConfig, Exclusion, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{
+        CopyMode, EndpointConfig, Exclusion, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig,
+        VersionSelection, VersionedCopyOptions, VersionedMapping,
+    };
 
     #[cfg(unix)]
     fn create_directory_link(target: &Path, link: &Path) {
@@ -690,6 +889,17 @@ mod tests {
             copy: Default::default(),
             trigger: TriggerConfig::Manual,
         }
+    }
+
+    fn versioned_rule(
+        source: PathBuf,
+        destination: PathBuf,
+        mappings: Vec<VersionedMapping>,
+    ) -> CopyRule {
+        let mut rule = rule(source, destination);
+        rule.copy.mode = CopyMode::Versioned;
+        rule.copy.versioned = VersionedCopyOptions { mappings };
+        rule
     }
 
     #[test]
@@ -901,6 +1111,203 @@ mod tests {
         assert!(matches!(result, Err(KfcError::PathEscape(_))));
         assert!(!outside.join("file.txt").exists());
         remove_directory_link(&link);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn versioned_latest_copies_newest_version_to_fixed_name() {
+        let root = temp_root("versioned-latest");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Core_1.0.0.dll"), b"v1").unwrap();
+        fs::write(source.join("EDM.DSP.Core_1.10.0.dll"), b"v1.10").unwrap();
+        fs::write(source.join("EDM.DSP.Core_2.0.0.dll"), b"v2").unwrap();
+        let rule = versioned_rule(
+            source.clone(),
+            destination.clone(),
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Core*.dll".into(),
+                target_name: "EDM.DSP.Core.dll".into(),
+                selection: VersionSelection::Latest,
+                version: None,
+                version_pattern: None,
+            }],
+        );
+
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+        assert_eq!(plan.stats.files_to_copy, 1);
+        assert_eq!(plan.items[0].action, PlanAction::CopyFile);
+        assert_eq!(plan.items[0].relative_path, Path::new("EDM.DSP.Core.dll"));
+        assert_eq!(
+            plan.items[0].source_relative_path.as_deref(),
+            Some(Path::new("EDM.DSP.Core_2.0.0.dll"))
+        );
+
+        engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(
+            fs::read(destination.join("EDM.DSP.Core.dll")).unwrap(),
+            b"v2"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_exact_copies_the_requested_version() {
+        let root = temp_root("versioned-exact");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Proxy_1.0.0.dll"), b"old").unwrap();
+        fs::write(source.join("EDM.DSP.Proxy_2.0.0.dll"), b"new").unwrap();
+        let rule = versioned_rule(
+            source.clone(),
+            destination.clone(),
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Proxy*.dll".into(),
+                target_name: "EDM.DSP.Proxy.dll".into(),
+                selection: VersionSelection::Exact,
+                version: Some("1.0.0".into()),
+                version_pattern: None,
+            }],
+        );
+
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+        assert_eq!(plan.stats.files_to_copy, 1);
+        assert_eq!(
+            plan.items[0].source_relative_path.as_deref(),
+            Some(Path::new("EDM.DSP.Proxy_1.0.0.dll"))
+        );
+
+        engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(
+            fs::read(destination.join("EDM.DSP.Proxy.dll")).unwrap(),
+            b"old"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_single_unversioned_file_maps_to_fixed_name() {
+        let root = temp_root("versioned-single");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Gateway.dll"), b"gateway").unwrap();
+        let rule = versioned_rule(
+            source.clone(),
+            destination.clone(),
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Gateway*.dll".into(),
+                target_name: "bin/EDM.DSP.Gateway.dll".into(),
+                selection: VersionSelection::Latest,
+                version: None,
+                version_pattern: None,
+            }],
+        );
+
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+        assert_eq!(plan.stats.files_to_copy, 1);
+        assert_eq!(
+            plan.items[0].relative_path,
+            Path::new("bin/EDM.DSP.Gateway.dll")
+        );
+
+        engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(
+            fs::read(destination.join("bin/EDM.DSP.Gateway.dll")).unwrap(),
+            b"gateway"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_missing_match_emits_a_warning() {
+        let root = temp_root("versioned-missing");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Core_1.0.0.dll"), b"v1").unwrap();
+        let rule = versioned_rule(
+            source,
+            destination,
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Web*.dll".into(),
+                target_name: "EDM.DSP.Web.dll".into(),
+                selection: VersionSelection::Latest,
+                version: None,
+                version_pattern: None,
+            }],
+        );
+
+        let plan = LocalCopyEngine.plan(&rule).unwrap();
+        assert_eq!(plan.stats.files_to_copy, 0);
+        assert_eq!(plan.stats.warnings, 1);
+        assert_eq!(plan.items[0].action, PlanAction::Warn);
+        assert_eq!(plan.items[0].relative_path, Path::new("EDM.DSP.Web.dll"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_multiple_unversioned_matches_are_rejected() {
+        let root = temp_root("versioned-ambiguous");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Core.dll"), b"core").unwrap();
+        fs::write(source.join("EDM.DSP.Core.Data.dll"), b"data").unwrap();
+        let rule = versioned_rule(
+            source,
+            destination,
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Core*.dll".into(),
+                target_name: "EDM.DSP.Core.dll".into(),
+                selection: VersionSelection::Latest,
+                version: None,
+                version_pattern: None,
+            }],
+        );
+
+        let result = LocalCopyEngine.plan(&rule);
+        assert!(matches!(result, Err(KfcError::InvalidRule(_))));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn versioned_exact_version_not_found_is_rejected() {
+        let root = temp_root("versioned-exact-missing");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("EDM.DSP.Proxy_1.0.0.dll"), b"v1").unwrap();
+        let rule = versioned_rule(
+            source,
+            destination,
+            vec![VersionedMapping {
+                source_pattern: "EDM.DSP.Proxy*.dll".into(),
+                target_name: "EDM.DSP.Proxy.dll".into(),
+                selection: VersionSelection::Exact,
+                version: Some("9.9.9".into()),
+                version_pattern: None,
+            }],
+        );
+
+        let result = LocalCopyEngine.plan(&rule);
+        assert!(matches!(result, Err(KfcError::InvalidRule(_))));
         fs::remove_dir_all(root).unwrap();
     }
 }

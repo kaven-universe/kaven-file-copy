@@ -27,13 +27,14 @@
       "additionalProperties": false,
       "required": ["mode", "compare", "overwrite", "symlinks", "preserveMtime", "maxConcurrency", "retryCount"],
       "properties": {
-        "mode": { "const": "incremental" },
+        "mode": { "enum": ["incremental", "versioned"] },
         "compare": { "enum": ["size-and-mtime", "size-only"] },
         "overwrite": { "enum": ["if-changed", "never", "always"] },
         "symlinks": { "const": "skip" },
         "preserveMtime": { "type": "boolean" },
         "maxConcurrency": { "type": "integer", "minimum": 1, "maximum": 64 },
-        "retryCount": { "type": "integer", "minimum": 0, "maximum": 20 }
+        "retryCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "versioned": { "$ref": "#/$defs/versionedCopyOptions" }
       }
     },
     "trigger": { "$ref": "#/$defs/trigger" }
@@ -50,6 +51,30 @@
         { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "const": "path" }, "value": { "type": "string", "minLength": 1 } } },
         { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "const": "glob" }, "value": { "type": "string", "minLength": 1 } } }
       ]
+    },
+    "versionedCopyOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mappings"],
+      "properties": {
+        "mappings": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/versionedMapping" }
+        }
+      }
+    },
+    "versionedMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePattern", "targetName", "selection"],
+      "properties": {
+        "sourcePattern": { "type": "string", "minLength": 1 },
+        "targetName": { "type": "string", "minLength": 1 },
+        "selection": { "enum": ["latest", "exact"] },
+        "version": { "type": "string", "minLength": 1 },
+        "versionPattern": { "type": "string", "minLength": 1 }
+      }
     },
     "trigger": {
       "oneOf": [
