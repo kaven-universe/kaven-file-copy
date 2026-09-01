@@ -9,10 +9,23 @@ const props = defineProps<{
 
 const expanded = ref(props.expandAll);
 const hasChildren = computed(() => props.node.children.length > 0);
+const renamed = computed(() => {
+  const destination = props.node.item?.destinationPath;
+  return destination !== undefined
+    && destination !== null
+    && destination !== props.node.item?.relativePath;
+});
 
 watch([() => props.expandAll, () => props.node], ([expandAll]) => {
   expanded.value = expandAll;
 });
+
+function displayedName() {
+  if (!renamed.value || !props.node.item?.destinationPath) return props.node.name;
+  const path = props.node.item.destinationPath.replaceAll("\\", "/");
+  const index = path.lastIndexOf("/");
+  return index === -1 ? path : path.slice(index + 1);
+}
 </script>
 
 <template>
@@ -29,7 +42,9 @@ watch([() => props.expandAll, () => props.node], ([expandAll]) => {
         <span class="tree-chevron" :class="{ expanded }" aria-hidden="true"></span>
       </button>
       <span v-else class="tree-spacer" aria-hidden="true"></span>
-      <span class="preview-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">{{ node.name }}</span>
+      <span class="preview-tree-name" :class="{ directory: node.directory, renamed }" :title="node.relativePath">{{ displayedName() }}</span>
+      <small v-if="renamed" class="preview-source">from {{ node.relativePath }}</small>
+      <small v-if="node.item?.warning" class="plan-warning">⚠ {{ node.item.warning }}</small>
       <code v-if="node.item">{{ node.item.action }}</code>
       <small v-if="node.item">{{ node.item.reason }}</small>
     </div>
