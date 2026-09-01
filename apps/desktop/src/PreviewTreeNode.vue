@@ -30,6 +30,7 @@ watch([() => props.expandAll, () => props.node], ([expandAll]) => {
       </button>
       <span v-else class="tree-spacer" aria-hidden="true"></span>
       <span class="preview-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">{{ node.name }}</span>
+      <small v-if="node.item?.destinationPath && node.item.destinationPath !== node.item.relativePath" class="preview-rename">→ {{ node.item.destinationPath }}</small>
       <code v-if="node.item">{{ node.item.action }}</code>
       <small v-if="node.item">{{ node.item.reason }}</small>
     </div>

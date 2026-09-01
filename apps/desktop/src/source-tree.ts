@@ -1,8 +1,17 @@
-import type { SourceEntry } from "./types/generated";
+import type { GroupRule, SourceEntry } from "./types/generated";
 
 export interface SourceTreeNode extends SourceEntry {
   name: string;
   children: SourceTreeNode[];
+}
+
+export interface GroupTreeNode {
+  /** Extracted value (for example a version) used as the group key. */
+  key: string;
+  /** Optional display label shown before the key. */
+  label: string;
+  selected: boolean;
+  matched: SourceEntry[];
 }
 
 export interface PathSelectionState {
@@ -120,6 +129,87 @@ export function formatModified(modified: number | null | undefined) {
   if (Number.isNaN(date.getTime())) return "—";
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function buildGroupTree(
+  entries: SourceEntry[],
+  group: GroupRule | null,
+  selectedGroups: Iterable<string>,
+  query: string,
+): GroupTreeNode[] {
+  const selected = new Set(selectedGroups);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const topLevelFiles = entries.filter(
+    (entry) => !entry.directory && !normalizeTreePath(entry.relativePath).includes("/"),
+  );
+  const nodesByKey = new Map<string, GroupTreeNode>();
+  const unmatched: GroupTreeNode = {
+    key: "",
+    label: "Other files",
+    selected: false,
+    matched: [],
+  };
+  for (const file of topLevelFiles) {
+    const name = entryName(file);
+    const key = group ? extractGroupKey(group.pattern, name) : null;
+    if (key === null || !group) {
+      unmatched.matched.push(file);
+      continue;
+    }
+    let node = nodesByKey.get(key);
+    if (!node) {
+      node = { key, label: group.label, selected: selected.has(key), matched: [] };
+      nodesByKey.set(key, node);
+    }
+    node.matched.push(file);
+  }
+  let result = [...nodesByKey.values()].sort((left, right) => compareVersions(right.key, left.key));
+  if (unmatched.matched.length > 0) result.push(unmatched);
+  if (!normalizedQuery) return result;
+  return result.filter(
+    (node) =>
+      node.key.toLocaleLowerCase().includes(normalizedQuery)
+      || node.label.toLocaleLowerCase().includes(normalizedQuery)
+      || node.matched.some((file) =>
+        normalizeTreePath(file.relativePath).toLocaleLowerCase().includes(normalizedQuery),
+      ),
+  );
+}
+
+function extractGroupKey(pattern: string, file: string): string | null {
+  try {
+    const match = new RegExp(pattern).exec(file);
+    if (!match) return null;
+    const value = match[1] ?? match[0];
+    return value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compares dotted version strings numerically, segment by segment (1.0.0.10 > 1.0.0.2). */
+export function compareVersions(left: string, right: string) {
+  const leftParts = left.split(".");
+  const rightParts = right.split(".");
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index];
+    const rightPart = rightParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    const leftNumber = Number(leftPart);
+    const rightNumber = Number(rightPart);
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+    } else {
+      const compared = leftPart.localeCompare(rightPart, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (compared !== 0) return compared;
+    }
+  }
+  return 0;
 }
 
 export function setPathIncluded(
