@@ -47,6 +47,7 @@ const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
 const busy = ref(false);
 const message = ref("");
 const progress = ref<ProgressEvent | null>(null);
+const runModal = ref(false);
 const previewProgress = ref<PlanProgressEvent | null>(null);
 const previewQuery = ref("");
 const previewAction = ref<PreviewActionFilter>("all");
@@ -330,6 +331,23 @@ function resolveConfirm(confirmed: boolean) {
   else if (dialog.onCancel) dialog.onCancel();
 }
 
+function navigate(target: "rules" | "jobs") {
+  if (view.value !== "editor" || !selectedRule.value) {
+    view.value = target;
+    return;
+  }
+  const dirty = JSON.stringify(toRaw(selectedRule.value)) !== JSON.stringify(originalRule.value);
+  if (dirty) {
+    askConfirm(
+      t("dialog.discardTitle"),
+      t("dialog.discardMessage"),
+      () => { view.value = target; },
+    );
+    return;
+  }
+  view.value = target;
+}
+
 function cancelEdit() {
   if (!selectedRule.value) {
     view.value = "rules";
@@ -381,13 +399,19 @@ async function preview() {
 
 async function run(rule: CopyRule) {
   progress.value = null;
-  view.value = "jobs";
+  runModal.value = true;
   await act(async () => {
     await rememberRulePaths(rule);
     const summary = await api.executeRule(structuredClone(toRaw(rule)));
     jobs.value = [summary, ...jobs.value.filter((job) => job.jobId !== summary.jobId)];
     progress.value = null;
   });
+  runModal.value = false;
+}
+
+function cancelRun() {
+  runModal.value = false;
+  void cancelJob();
 }
 
 function runCurrentRule() {
@@ -421,6 +445,28 @@ function removeRule(rule: CopyRule) {
 async function loadJobEvents(jobId: string) {
   if (jobEvents.value[jobId]) return;
   await act(async () => { jobEvents.value[jobId] = await api.getJobEvents(jobId); });
+}
+
+async function removeJob(job: JobSummary) {
+  await act(async () => {
+    await api.deleteJob(job.jobId);
+    jobs.value = jobs.value.filter((entry) => entry.jobId !== job.jobId);
+    delete jobEvents.value[job.jobId];
+  });
+}
+
+function removeAllJobs() {
+  askConfirm(
+    t("dialog.removeAllTitle"),
+    t("dialog.removeAllMessage"),
+    async () => {
+      await act(async () => {
+        await api.deleteAllJobs();
+        jobs.value = [];
+        jobEvents.value = {};
+      });
+    },
+  );
 }
 
 async function cancelJob() {
@@ -475,7 +521,7 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <header><div><h1>Kaven File Copy</h1><p>{{ t("app.tagline") }}</p></div><nav><button @click="view='rules'">{{ t("nav.rules") }}</button><button @click="view='jobs'">{{ t("nav.jobs") }}</button></nav><div class="view-switch lang-switch" role="group" :aria-label="t('lang.aria')"><button type="button" :class="{ active: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button><button type="button" :class="{ active: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button></div></header>
+    <header><div class="brand"><h1>Kaven File Copy</h1><p>{{ t("app.tagline") }}</p></div><nav class="topbar-tabs" :aria-label="t('nav.aria')"><button type="button" :class="{ active: view === 'rules' || view === 'editor' }" @click="navigate('rules')">{{ t("nav.rules") }}</button><button type="button" :class="{ active: view === 'jobs' }" @click="navigate('jobs')">{{ t("nav.jobs") }}</button></nav><div class="view-switch lang-switch" role="group" :aria-label="t('lang.aria')"><button type="button" :class="{ active: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button><button type="button" :class="{ active: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button></div></header>
     <p v-if="message" class="error">{{ message }}</p>
     <main v-if="view === 'rules'">
       <div class="toolbar"><h2>{{ t("rules.title") }}</h2><span></span><button @click="importRule">{{ t("action.import") }}</button><button class="primary" @click="edit()">{{ t("action.newRule") }}</button></div>
@@ -729,9 +775,9 @@ onMounted(async () => {
       </section>
     </main>
     <main v-else>
-      <div class="toolbar"><h2>{{ t("jobs.title") }}</h2><span></span><button @click="refresh">{{ t("action.refresh") }}</button></div>
+      <div class="toolbar"><h2>{{ t("jobs.title") }}</h2><span></span><button @click="refresh">{{ t("action.refresh") }}</button><button class="danger" :disabled="busy || !jobs.length" @click="removeAllJobs">{{ t("action.removeAll") }}</button></div>
       <section v-if="progress" class="card"><div class="toolbar"><h3>{{ t("jobs.current") }}</h3><span></span><button @click="cancelJob">{{ t("action.cancel") }}</button></div><progress :value="progress.completedFiles" :max="progress.totalFiles || 1"></progress><p>{{ t('jobs.progress', { completed: progress.completedFiles, total: progress.totalFiles ?? '', path: progress.relativePath ?? '' }) }}</p></section>
-      <article v-for="job in jobs" :key="job.jobId" class="card"><div class="toolbar"><strong :class="`status ${job.status}`">{{ job.status }}</strong><span></span><time>{{ new Date(job.finishedAt).toLocaleString() }}</time></div><p>{{ t('jobs.summary', { copied: job.copiedFiles, skipped: job.skippedFiles, failed: job.failedFiles, bytes: job.copiedBytes }) }}</p><details @toggle="($event.target as HTMLDetailsElement).open && loadJobEvents(job.jobId)"><summary>{{ t("jobs.log") }}</summary><div class="plan"><div v-for="event in jobEvents[job.jobId] ?? []" :key="`${event.timestamp}-${event.relativePath}`"><code>{{ event.result }}</code> {{ event.relativePath }} <small>{{ event.message }}</small></div></div></details></article>
+      <article v-for="job in jobs" :key="job.jobId" class="card"><div class="toolbar"><strong :class="`status ${job.status}`">{{ job.status }}</strong><span></span><time>{{ new Date(job.finishedAt).toLocaleString() }}</time><button :disabled="busy" @click="removeJob(job)">{{ t("action.remove") }}</button></div><p>{{ t('jobs.summary', { copied: job.copiedFiles, skipped: job.skippedFiles, failed: job.failedFiles, bytes: job.copiedBytes }) }}</p><details @toggle="($event.target as HTMLDetailsElement).open && loadJobEvents(job.jobId)"><summary>{{ t("jobs.log") }}</summary><div class="plan"><div v-for="event in jobEvents[job.jobId] ?? []" :key="`${event.timestamp}-${event.relativePath}`"><code>{{ event.result }}</code> {{ event.relativePath }} <small>{{ event.message }}</small></div></div></details></article>
     </main>
   </div>
   <div v-if="confirmDialog" class="modal-backdrop" @click.self="resolveConfirm(false)">
@@ -741,6 +787,17 @@ onMounted(async () => {
       <div class="actions">
         <button type="button" @click="resolveConfirm(false)">{{ t("action.cancel") }}</button>
         <button type="button" class="primary" @click="resolveConfirm(true)">{{ t("action.confirm") }}</button>
+      </div>
+    </div>
+  </div>
+  <div v-if="runModal" class="modal-backdrop run-backdrop">
+    <div class="modal run-modal" role="alertdialog" aria-modal="true" aria-live="polite">
+      <h3>{{ t("run.title") }}</h3>
+      <progress v-if="progress" :value="progress.completedFiles" :max="progress.totalFiles || 1"></progress>
+      <progress v-else></progress>
+      <p class="run-status">{{ progress ? t('jobs.progress', { completed: progress.completedFiles, total: progress.totalFiles ?? '', path: progress.relativePath ?? '' }) : '' }}</p>
+      <div class="actions">
+        <button type="button" class="danger" @click="cancelRun">{{ t("action.cancel") }}</button>
       </div>
     </div>
   </div>

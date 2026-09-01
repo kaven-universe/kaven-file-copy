@@ -13,5 +13,7 @@ export const api = {
   cancelJob: () => invoke<void>("cancel_job"),
   listJobs: () => invoke<JobSummary[]>("list_jobs"),
   getJobEvents: (id: string) => invoke<JobEvent[]>("get_job_events", { id }),
+  deleteJob: (id: string) => invoke<void>("delete_job", { id }),
+  deleteAllJobs: () => invoke<void>("delete_all_jobs"),
   listSourceEntries: (rule: CopyRule) => invoke<SourceEntry[]>("list_source_entries", { rule }),
 };

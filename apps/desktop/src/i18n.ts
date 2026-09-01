@@ -7,7 +7,8 @@ const STORAGE_KEY = "kfc-locale";
 const messages: Record<string, Record<Locale, string>> = {
   "app.tagline": { en: "Safe, reusable local copy rules", zh: "安全、可复用的本地复制规则" },
   "nav.rules": { en: "Rules", zh: "规则" },
-  "nav.jobs": { en: "Jobs", zh: "任务" },
+  "nav.jobs": { en: "History", zh: "历史" },
+  "nav.aria": { en: "Views", zh: "视图" },
   "lang.aria": { en: "Language", zh: "语言" },
 
   "rules.title": { en: "Copy rules", zh: "复制规则" },
@@ -28,6 +29,7 @@ const messages: Record<string, Record<Locale, string>> = {
   "action.confirm": { en: "Confirm", zh: "确认" },
   "action.save": { en: "Save", zh: "保存" },
   "action.refresh": { en: "Refresh", zh: "刷新" },
+  "action.removeAll": { en: "Remove all", zh: "移除全部" },
   "action.browse": { en: "Browse", zh: "浏览" },
   "action.remove": { en: "Remove", zh: "移除" },
 
@@ -126,6 +128,7 @@ const messages: Record<string, Record<Locale, string>> = {
 
   "jobs.title": { en: "Job history", zh: "任务历史" },
   "jobs.current": { en: "Current job", zh: "当前任务" },
+  "run.title": { en: "Copying…", zh: "复制中…" },
   "jobs.progress": { en: "{completed} / {total} files · {path}", zh: "{completed} / {total} 个文件 · {path}" },
   "jobs.summary": { en: "{copied} copied · {skipped} skipped · {failed} failed · {bytes} bytes", zh: "已复制 {copied} 个 · 跳过 {skipped} 个 · 失败 {failed} 个 · {bytes} 字节" },
   "jobs.log": { en: "Detailed log", zh: "详细日志" },
@@ -136,6 +139,8 @@ const messages: Record<string, Record<Locale, string>> = {
   "dialog.deleteMessage": { en: "Delete rule “{name}”? Copied files will not be deleted.", zh: "删除规则“{name}”？已复制的文件不会被删除。" },
   "dialog.importConflictTitle": { en: "Rule already exists", zh: "规则已存在" },
   "dialog.importConflictMessage": { en: "A rule named “{name}” already uses this ID. Confirm to overwrite it, or Cancel to import a new copy.", zh: "已存在使用此 ID 的规则“{name}”。选择“确认”覆盖它，或选择“取消”导入为新副本。" },
+  "dialog.removeAllTitle": { en: "Remove all history?", zh: "移除全部历史？" },
+  "dialog.removeAllMessage": { en: "This removes every recorded job from history. This cannot be undone.", zh: "这将从历史中删除所有任务记录，且无法撤销。" },
 
   "msg.loadRecentPaths": { en: "Could not load recent paths: {error}", zh: "无法加载最近路径：{error}" },
   "msg.updateRecentPaths": { en: "Could not update recent paths: {error}", zh: "无法更新最近路径：{error}" },
