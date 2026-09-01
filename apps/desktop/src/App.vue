@@ -31,6 +31,8 @@ const view = ref<View>("rules");
 const rules = ref<CopyRule[]>([]);
 const jobs = ref<JobSummary[]>([]);
 const selectedRule = ref<CopyRule | null>(null);
+const originalRule = ref<CopyRule | null>(null);
+const confirmDialog = ref<{ title: string; message: string; onConfirm: () => void } | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
@@ -147,6 +149,7 @@ function edit(rule?: CopyRule) {
   copy.filters.selectedGroups ??= [];
   copy.filters.selectionMode ??= "manual";
   copy.copy.rename ??= null;
+  originalRule.value = structuredClone(copy);
   sourceMode.value = copy.filters.selectionMode;
   selectedRule.value = reactive(copy);
   sourceEntries.value = [];
@@ -299,6 +302,33 @@ const renameExample = computed(() => {
   return `${first} does not match the pattern; it will be copied as-is.`;
 });
 
+function askConfirm(title: string, message: string, onConfirm: () => void) {
+  confirmDialog.value = { title, message, onConfirm };
+}
+
+function resolveConfirm(confirmed: boolean) {
+  const dialog = confirmDialog.value;
+  confirmDialog.value = null;
+  if (dialog && confirmed) dialog.onConfirm();
+}
+
+function cancelEdit() {
+  if (!selectedRule.value) {
+    view.value = "rules";
+    return;
+  }
+  const dirty = JSON.stringify(toRaw(selectedRule.value)) !== JSON.stringify(originalRule.value);
+  if (dirty) {
+    askConfirm(
+      "Discard changes?",
+      "You have unsaved changes to this rule. Discard them and leave the editor?",
+      () => { view.value = "rules"; },
+    );
+  } else {
+    view.value = "rules";
+  }
+}
+
 async function persist() {
   if (!selectedRule.value) return;
   await act(async () => {
@@ -331,11 +361,6 @@ async function preview() {
   }
 }
 
-async function previewSavedRule(rule: CopyRule) {
-  edit(rule);
-  await preview();
-}
-
 async function run(rule: CopyRule) {
   progress.value = null;
   view.value = "jobs";
@@ -360,9 +385,14 @@ function duplicateRule(rule: CopyRule) {
   edit(copy);
 }
 
-async function removeRule(rule: CopyRule) {
-  if (!confirm(`Delete rule “${rule.name}”? Copied files will not be deleted.`)) return;
-  await act(async () => { await api.deleteRule(rule.id); await refresh(); });
+function removeRule(rule: CopyRule) {
+  askConfirm(
+    "Delete rule?",
+    `Delete rule “${rule.name}”? Copied files will not be deleted.`,
+    async () => {
+      await act(async () => { await api.deleteRule(rule.id); await refresh(); });
+    },
+  );
 }
 
 async function loadJobEvents(jobId: string) {
@@ -421,13 +451,13 @@ onMounted(async () => {
     <main v-if="view === 'rules'">
       <div class="toolbar"><h2>Copy rules</h2><span></span><button @click="importRule">Import</button><button class="primary" @click="edit()">New rule</button></div>
       <div v-if="!rules.length" class="empty">No rules yet. Create one to start copying.</div>
-      <article v-for="rule in rules" :key="rule.id" class="card rule-card">
-        <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ rule.trigger.type }} · {{ rule.enabled ? 'enabled' : 'disabled' }}</small></div>
-        <div class="actions"><button @click="exportRule(rule)">Export</button><button @click="duplicateRule(rule)">Duplicate</button><button :disabled="busy" @click="previewSavedRule(rule)">Preview</button><button @click="edit(rule)">Edit</button><button :disabled="busy" @click="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click="run(rule)">Run</button></div>
+      <article v-for="rule in rules" :key="rule.id" class="card rule-card" title="Click to edit this rule" @click="edit(rule)">
+        <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ rule.trigger.type }}{{ rule.trigger.type !== 'manual' ? ' · ' + (rule.enabled ? 'enabled' : 'disabled') : '' }}</small></div>
+        <div class="actions"><button @click.stop="exportRule(rule)">Export</button><button @click.stop="duplicateRule(rule)">Duplicate</button><button v-if="rule.trigger.type !== 'manual'" :disabled="busy" @click.stop="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click.stop="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click.stop="run(rule)">Run</button></div>
       </article>
     </main>
     <main v-else-if="view === 'editor' && selectedRule">
-      <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="view='rules'">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
+      <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="cancelEdit">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
       <section class="card form-grid">
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
         <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
@@ -440,7 +470,7 @@ onMounted(async () => {
         <label v-if="selectedRule.trigger.type === 'watch'">Debounce (ms)<input v-model.number="selectedRule.trigger.debounceMs" type="number" min="100" /></label>
         <label v-if="selectedRule.trigger.type === 'interval'">Interval (seconds)<input v-model.number="selectedRule.trigger.seconds" type="number" min="1" /></label>
         <label v-if="selectedRule.trigger.type === 'cron'" class="wide">Cron expression<input v-model="selectedRule.trigger.expression" /></label>
-        <label class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>Rule enabled</span></label>
+        <label v-if="selectedRule.trigger.type !== 'manual'" class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>Rule enabled</span></label>
         <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>Include hidden files</span></label>
         <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
         <label class="wide">Destination name
@@ -670,5 +700,15 @@ onMounted(async () => {
       <section v-if="progress" class="card"><div class="toolbar"><h3>Current job</h3><span></span><button @click="cancelJob">Cancel</button></div><progress :value="progress.completedFiles" :max="progress.totalFiles || 1"></progress><p>{{ progress.completedFiles }} / {{ progress.totalFiles }} files · {{ progress.relativePath }}</p></section>
       <article v-for="job in jobs" :key="job.jobId" class="card"><div class="toolbar"><strong :class="`status ${job.status}`">{{ job.status }}</strong><span></span><time>{{ new Date(job.finishedAt).toLocaleString() }}</time></div><p>{{ job.copiedFiles }} copied · {{ job.skippedFiles }} skipped · {{ job.failedFiles }} failed · {{ job.copiedBytes }} bytes</p><details @toggle="($event.target as HTMLDetailsElement).open && loadJobEvents(job.jobId)"><summary>Detailed log</summary><div class="plan"><div v-for="event in jobEvents[job.jobId] ?? []" :key="`${event.timestamp}-${event.relativePath}`"><code>{{ event.result }}</code> {{ event.relativePath }} <small>{{ event.message }}</small></div></div></details></article>
     </main>
+  </div>
+  <div v-if="confirmDialog" class="modal-backdrop" @click.self="resolveConfirm(false)">
+    <div class="modal" role="alertdialog" aria-modal="true">
+      <h3>{{ confirmDialog.title }}</h3>
+      <p>{{ confirmDialog.message }}</p>
+      <div class="actions">
+        <button type="button" @click="resolveConfirm(false)">Cancel</button>
+        <button type="button" class="primary" @click="resolveConfirm(true)">Confirm</button>
+      </div>
+    </div>
   </div>
 </template>
