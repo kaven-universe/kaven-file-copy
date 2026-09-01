@@ -330,6 +330,23 @@ function resolveConfirm(confirmed: boolean) {
   else if (dialog.onCancel) dialog.onCancel();
 }
 
+function navigate(target: "rules" | "jobs") {
+  if (view.value !== "editor" || !selectedRule.value) {
+    view.value = target;
+    return;
+  }
+  const dirty = JSON.stringify(toRaw(selectedRule.value)) !== JSON.stringify(originalRule.value);
+  if (dirty) {
+    askConfirm(
+      t("dialog.discardTitle"),
+      t("dialog.discardMessage"),
+      () => { view.value = target; },
+    );
+    return;
+  }
+  view.value = target;
+}
+
 function cancelEdit() {
   if (!selectedRule.value) {
     view.value = "rules";
@@ -475,7 +492,7 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <header><div><h1>Kaven File Copy</h1><p>{{ t("app.tagline") }}</p></div><nav><button @click="view='rules'">{{ t("nav.rules") }}</button><button @click="view='jobs'">{{ t("nav.jobs") }}</button></nav><div class="view-switch lang-switch" role="group" :aria-label="t('lang.aria')"><button type="button" :class="{ active: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button><button type="button" :class="{ active: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button></div></header>
+    <header><div class="brand"><h1>Kaven File Copy</h1><p>{{ t("app.tagline") }}</p></div><nav class="topbar-tabs" :aria-label="t('nav.aria')"><button type="button" :class="{ active: view === 'rules' || view === 'editor' }" @click="navigate('rules')">{{ t("nav.rules") }}</button><button type="button" :class="{ active: view === 'jobs' }" @click="navigate('jobs')">{{ t("nav.jobs") }}</button></nav><div class="view-switch lang-switch" role="group" :aria-label="t('lang.aria')"><button type="button" :class="{ active: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button><button type="button" :class="{ active: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button></div></header>
     <p v-if="message" class="error">{{ message }}</p>
     <main v-if="view === 'rules'">
       <div class="toolbar"><h2>{{ t("rules.title") }}</h2><span></span><button @click="importRule">{{ t("action.import") }}</button><button class="primary" @click="edit()">{{ t("action.newRule") }}</button></div>

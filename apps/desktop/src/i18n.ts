@@ -8,6 +8,7 @@ const messages: Record<string, Record<Locale, string>> = {
   "app.tagline": { en: "Safe, reusable local copy rules", zh: "安全、可复用的本地复制规则" },
   "nav.rules": { en: "Rules", zh: "规则" },
   "nav.jobs": { en: "Jobs", zh: "任务" },
+  "nav.aria": { en: "Views", zh: "视图" },
   "lang.aria": { en: "Language", zh: "语言" },
 
   "rules.title": { en: "Copy rules", zh: "复制规则" },
