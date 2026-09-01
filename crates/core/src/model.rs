@@ -78,6 +78,23 @@ impl CopyRule {
             }
             _ => {}
         }
+        if self
+            .filters
+            .group
+            .as_ref()
+            .is_some_and(|group| group.pattern.trim().is_empty())
+        {
+            return Err(crate::KfcError::InvalidRule(
+                "group pattern must not be empty".into(),
+            ));
+        }
+        if self.copy.rename.as_ref().is_some_and(|rename| {
+            rename.pattern.trim().is_empty() || rename.destination.trim().is_empty()
+        }) {
+            return Err(crate::KfcError::InvalidRule(
+                "rename pattern and destination must not be empty".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -106,6 +123,50 @@ pub struct FilterConfig {
     #[serde(default)]
     pub exclude: Vec<String>,
     pub include_hidden: bool,
+    /// Single version-extraction rule for the group-selection mode.
+    #[serde(default)]
+    pub group: Option<GroupRule>,
+    /// Extracted values (for example versions) the user has checked.
+    #[serde(default)]
+    pub selected_groups: Vec<String>,
+    /// Which selection model drives the copy: manual or group rules.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+}
+
+/// A version-extraction rule used to group top-level file names.
+///
+/// The regex's first capture group is extracted from each file name and used as
+/// the group key; files sharing the same captured value form one group.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GroupRule {
+    /// Optional display label shown before the extracted value (for example "Version").
+    #[serde(default)]
+    pub label: String,
+    /// Regex whose first capture group extracts the grouping key (for example the version).
+    pub pattern: String,
+}
+
+/// Renames destination file names based on the source file name.
+///
+/// The regex's capture groups are referenced in the destination template as
+/// `$1`, `$2`, and so on. Files whose name does not match keep their name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameRule {
+    /// Regex with capture groups matched against the source file name.
+    pub pattern: String,
+    /// Destination name template using `$1..$n` capture references.
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, Default, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelectionMode {
+    #[default]
+    Manual,
+    Groups,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +179,9 @@ pub struct CopyOptions {
     pub preserve_mtime: bool,
     pub max_concurrency: usize,
     pub retry_count: u32,
+    /// Optional rule that renames destination file names from source names.
+    #[serde(default)]
+    pub rename: Option<RenameRule>,
 }
 
 impl Default for CopyOptions {
@@ -130,6 +194,7 @@ impl Default for CopyOptions {
             preserve_mtime: true,
             max_concurrency: default_concurrency(),
             retry_count: default_retries(),
+            rename: None,
         }
     }
 }
@@ -206,6 +271,9 @@ pub struct CopyPlan {
 pub struct PlanItem {
     pub action: PlanAction,
     pub relative_path: PathBuf,
+    /// Destination relative path when the file is renamed; otherwise the source path.
+    #[serde(default)]
+    pub destination_path: Option<PathBuf>,
     pub size: u64,
     pub reason: String,
 }
