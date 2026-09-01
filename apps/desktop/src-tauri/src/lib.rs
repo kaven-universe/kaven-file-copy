@@ -261,6 +261,21 @@ fn get_job_events(
 }
 
 #[tauri::command]
+fn delete_job(state: State<'_, AppState>, id: uuid::Uuid) -> Result<(), String> {
+    state.repositories.delete_job(id).map_err(error)
+}
+
+#[tauri::command]
+fn delete_all_jobs(state: State<'_, AppState>) -> Result<(), String> {
+    state.repositories.clear_jobs().map_err(error)
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    open::that_detached(&path).map_err(error)
+}
+
+#[tauri::command]
 fn list_source_entries(rule: CopyRule) -> Result<Vec<SourceEntry>, String> {
     let paths = LocalCopyEngine.validate_rule(&rule).map_err(error)?;
     if paths.source_is_file {
@@ -545,6 +560,9 @@ pub fn run() {
             cancel_job,
             list_jobs,
             get_job_events,
+            delete_job,
+            delete_all_jobs,
+            open_path,
             list_source_entries
         ])
         .run(tauri::generate_context!())

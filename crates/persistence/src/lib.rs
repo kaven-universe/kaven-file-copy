@@ -172,6 +172,27 @@ impl FileRepositories {
         Ok(removed)
     }
 
+    /// Removes a single job and its recorded events from history.
+    pub fn delete_job(&self, id: Uuid) -> Result<()> {
+        let path = self.job_dir(id);
+        match fs::remove_dir_all(&path) {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(PersistenceError::Io { path, source }),
+        }
+    }
+
+    /// Removes every recorded job from history.
+    pub fn clear_jobs(&self) -> Result<()> {
+        let path = self.jobs_dir();
+        match fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(PersistenceError::Io { path, source }),
+        }
+        create_dir_all(&path)
+    }
+
     fn rules_dir(&self) -> PathBuf {
         self.root.join("rules")
     }
@@ -347,6 +368,66 @@ mod tests {
         fs::write(broken.join("summary.json"), b"{ not json }").unwrap();
 
         assert_eq!(repositories.list_job_summaries().unwrap(), vec![summary]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_job_removes_summary_and_events_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("kfc-persistence-test-{}", Uuid::new_v4()));
+        let repositories = FileRepositories::new(&root);
+        let job_id = Uuid::new_v4();
+        let timestamp = Utc::now();
+        let summary = JobSummary {
+            job_id,
+            rule_id: Uuid::new_v4(),
+            started_at: timestamp,
+            finished_at: timestamp,
+            status: JobStatus::Succeeded,
+            copied_files: 1,
+            skipped_files: 0,
+            failed_files: 0,
+            copied_bytes: 4,
+            errors: Vec::new(),
+        };
+        repositories.save_job_summary(&summary).unwrap();
+        repositories.append_job_event(job_id, &summary).unwrap();
+        assert_eq!(repositories.list_job_summaries().unwrap(), vec![summary]);
+
+        repositories.delete_job(job_id).unwrap();
+        assert!(repositories.list_job_summaries().unwrap().is_empty());
+
+        // Deleting an already-removed job is a no-op, not an error.
+        repositories.delete_job(job_id).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clear_jobs_removes_every_job_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("kfc-persistence-test-{}", Uuid::new_v4()));
+        let repositories = FileRepositories::new(&root);
+        let timestamp = Utc::now();
+        for _ in 0..3 {
+            let summary = JobSummary {
+                job_id: Uuid::new_v4(),
+                rule_id: Uuid::new_v4(),
+                started_at: timestamp,
+                finished_at: timestamp,
+                status: JobStatus::Succeeded,
+                copied_files: 1,
+                skipped_files: 0,
+                failed_files: 0,
+                copied_bytes: 4,
+                errors: Vec::new(),
+            };
+            repositories.save_job_summary(&summary).unwrap();
+        }
+        assert_eq!(repositories.list_job_summaries().unwrap().len(), 3);
+
+        repositories.clear_jobs().unwrap();
+        assert!(repositories.list_job_summaries().unwrap().is_empty());
+
+        // Clearing an already-empty history is a no-op, not an error.
+        repositories.clear_jobs().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }
