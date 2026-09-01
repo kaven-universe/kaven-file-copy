@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::{KfcError, Result};
+use regex::Regex;
+
+use crate::{GroupRule, KfcError, RenameRule, Result};
 
 /// Decides which source entries a copy rule selects.
 ///
@@ -75,6 +77,125 @@ fn deepest_match(paths: &[String], target: &str) -> Option<usize> {
         })
         .map(String::len)
         .max()
+}
+
+/// A compiled group rule that extracts a key (for example a version) from a
+/// top-level source file name.
+pub struct GroupMatcher {
+    pub label: String,
+    pattern: Regex,
+}
+
+impl GroupMatcher {
+    /// Extracts the grouping key from a file name, or `None` when it does not match.
+    ///
+    /// The regex's first capture group wins; when the pattern has no capture
+    /// group the whole match is used as the key.
+    pub fn extract(&self, file_name: &str) -> Option<String> {
+        let captures = self.pattern.captures(file_name)?;
+        let value = captures
+            .get(1)
+            .or_else(|| captures.get(0))
+            .map(|matched| matched.as_str())?;
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_owned())
+        }
+    }
+}
+
+/// Validates the single group rule when one is configured.
+pub fn validate_group_rule(group: &Option<GroupRule>) -> Result<()> {
+    if let Some(group) = group {
+        compile_group_matcher(group)?;
+    }
+    Ok(())
+}
+
+/// Compiles the configured group rule for version extraction.
+pub fn compile_group_rule(group: &Option<GroupRule>) -> Result<Option<GroupMatcher>> {
+    group.as_ref().map(compile_group_matcher).transpose()
+}
+
+/// A compiled rename rule that rewrites a source file name into a destination name.
+pub struct RenameMatcher {
+    pattern: Regex,
+    destination: String,
+}
+
+impl RenameMatcher {
+    /// Returns the renamed file name, or `None` when the name does not match.
+    pub fn rename(&self, file_name: &str) -> Option<String> {
+        let captures = self.pattern.captures(file_name)?;
+        Some(apply_template(&self.destination, &captures))
+    }
+}
+
+/// Validates the rename rule when one is configured.
+pub fn validate_rename_rule(rename: &Option<RenameRule>) -> Result<()> {
+    if let Some(rename) = rename {
+        compile_rename_matcher(rename)?;
+    }
+    Ok(())
+}
+
+/// Compiles the configured rename rule.
+pub fn compile_rename_rule(rename: &Option<RenameRule>) -> Result<Option<RenameMatcher>> {
+    rename.as_ref().map(compile_rename_matcher).transpose()
+}
+
+fn compile_rename_matcher(rename: &RenameRule) -> Result<RenameMatcher> {
+    let pattern = Regex::new(&rename.pattern).map_err(|error| {
+        KfcError::InvalidRule(format!(
+            "invalid rename pattern '{}': {error}",
+            rename.pattern
+        ))
+    })?;
+    Ok(RenameMatcher {
+        pattern,
+        destination: rename.destination.clone(),
+    })
+}
+
+fn apply_template(template: &str, captures: &regex::Captures<'_>) -> String {
+    let mut result = String::new();
+    let characters: Vec<char> = template.chars().collect();
+    let mut index = 0;
+    while index < characters.len() {
+        if characters[index] == '$'
+            && characters
+                .get(index + 1)
+                .is_some_and(|c| c.is_ascii_digit())
+        {
+            let mut end = index + 1;
+            while characters.get(end).is_some_and(|c| c.is_ascii_digit()) {
+                end += 1;
+            }
+            let group: usize = template[index + 1..end].parse().unwrap_or(0);
+            if let Some(matched) = captures.get(group) {
+                result.push_str(matched.as_str());
+            }
+            index = end;
+        } else {
+            result.push(characters[index]);
+            index += 1;
+        }
+    }
+    result
+}
+
+fn compile_group_matcher(group: &GroupRule) -> Result<GroupMatcher> {
+    let pattern = Regex::new(&group.pattern).map_err(|error| {
+        KfcError::InvalidRule(format!(
+            "invalid group pattern '{}': {error}",
+            group.pattern
+        ))
+    })?;
+    Ok(GroupMatcher {
+        label: group.label.clone(),
+        pattern,
+    })
 }
 
 fn normalize_rule_path(value: &str) -> Result<String> {

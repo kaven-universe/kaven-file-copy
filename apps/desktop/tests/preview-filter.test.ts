@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPreviewTree, filterPlanItems } from "../src/preview-filter";
+import { filterPlanItems, sortPreviewItems } from "../src/preview-filter";
 import type { PlanItem } from "../src/types/generated";
 
 const items: PlanItem[] = [
@@ -23,23 +23,25 @@ test("preview filter searches reasons and returns all items for blank filters", 
   assert.deepEqual(filterPlanItems(items, "all", "   "), items);
 });
 
-test("preview tree groups filtered plan items by path segment", () => {
-  const tree = buildPreviewTree(items);
+test("preview items sort by action, source, target, and description", () => {
+  const entries: PlanItem[] = [
+    { action: "copy-file", relativePath: "m.txt", destinationPath: "a_renamed.txt", size: 1, reason: "z reason" },
+    { action: "copy-file", relativePath: "a.txt", destinationPath: "z_renamed.txt", size: 1, reason: "a reason" },
+    { action: "skip", relativePath: "c.txt", size: 1, reason: "m reason" },
+  ];
 
-  assert.deepEqual(tree.map((node) => node.name), ["documents", "links", "photos"]);
-  assert.equal(tree[0].children[0].name, "report.txt");
-  assert.equal(tree[0].children[0].item, items[2]);
-  assert.deepEqual(tree[2].children.map((node) => node.name), ["archive", "Beach.JPG"]);
-  assert.equal(tree[2].children[0].directory, true);
-  assert.equal(tree[2].children[0].item, items[1]);
-});
+  const bySource = sortPreviewItems(entries, "source", "asc");
+  assert.deepEqual(bySource.map((item) => item.relativePath), ["a.txt", "c.txt", "m.txt"]);
 
-test("preview tree normalizes separators and creates implicit directories", () => {
-  const [root] = buildPreviewTree([
-    { action: "copy-file", relativePath: "src\\components\\App.vue", size: 10, reason: "changed" },
-  ]);
+  const byAction = sortPreviewItems(entries, "action", "asc");
+  assert.deepEqual(byAction.map((item) => item.relativePath), ["a.txt", "m.txt", "c.txt"]);
 
-  assert.equal(root.relativePath, "src");
-  assert.equal(root.children[0].relativePath, "src/components");
-  assert.equal(root.children[0].children[0].relativePath, "src/components/App.vue");
+  const byTarget = sortPreviewItems(entries, "target", "asc");
+  assert.deepEqual(byTarget.map((item) => item.relativePath), ["m.txt", "c.txt", "a.txt"]);
+
+  const byDescription = sortPreviewItems(entries, "description", "asc");
+  assert.deepEqual(byDescription.map((item) => item.relativePath), ["a.txt", "c.txt", "m.txt"]);
+
+  const bySourceDesc = sortPreviewItems(entries, "source", "desc");
+  assert.deepEqual(bySourceDesc.map((item) => item.relativePath), ["m.txt", "c.txt", "a.txt"]);
 });

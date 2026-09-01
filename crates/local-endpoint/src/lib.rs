@@ -20,7 +20,8 @@ use filetime::FileTime;
 use kfc_core::{
     CompareStrategy, CopyPlan, CopyRule, FileError, InclusionMatcher, IoResultExt, JobStatus,
     JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
-    PlanProgressPhase, PlanStats, ProgressEvent, Result,
+    PlanProgressPhase, PlanStats, ProgressEvent, RenameMatcher, Result, SelectionMode,
+    compile_group_rule, compile_rename_rule, validate_group_rule, validate_rename_rule,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -29,10 +30,18 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone, Default)]
 pub struct LocalCopyEngine;
 
+struct PlanAccumulator {
+    items: Vec<PlanItem>,
+    stats: PlanStats,
+    claimed_destinations: std::collections::HashSet<PathBuf>,
+}
+
 impl LocalCopyEngine {
     pub fn validate_rule(&self, rule: &CopyRule) -> Result<ValidatedPaths> {
         rule.validate_structure()?;
         InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
+        validate_group_rule(&rule.filters.group)?;
+        validate_rename_rule(&rule.copy.rename)?;
 
         let source = rule.source.path();
         let destination = rule.destination.path();
@@ -74,14 +83,61 @@ impl LocalCopyEngine {
         self.plan_internal(rule, Some(progress))
     }
 
+    /// Expands the selected group rule into the top-level file paths it matches.
+    ///
+    /// The rule extracts a version-like key from a file name; files whose
+    /// extracted key is in the rule's selected values are copied. Only files
+    /// directly inside the source directory are considered; nested entries and
+    /// directories are ignored.
+    fn grouped_includes(&self, paths: &ValidatedPaths, rule: &CopyRule) -> Result<Vec<String>> {
+        if paths.source_is_file {
+            return Ok(Vec::new());
+        }
+        let matcher = compile_group_rule(&rule.filters.group)?;
+        let Some(matcher) = matcher else {
+            return Ok(Vec::new());
+        };
+        if rule.filters.selected_groups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let selected: std::collections::HashSet<&str> = rule
+            .filters
+            .selected_groups
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut includes = Vec::new();
+        for entry in fs::read_dir(&paths.source).at(&paths.source)? {
+            let entry = entry.at(&paths.source)?;
+            let file_type = entry.file_type().at(entry.path())?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let key = matcher.extract(&name);
+            if key.as_deref().is_some_and(|key| selected.contains(key)) {
+                includes.push(name);
+            }
+        }
+        Ok(includes)
+    }
+
     fn plan_internal<F>(&self, rule: &CopyRule, mut progress: Option<F>) -> Result<CopyPlan>
     where
         F: FnMut(&PlanProgressEvent),
     {
         let paths = self.validate_rule(rule)?;
-        let matcher = InclusionMatcher::new(&rule.filters.include, &rule.filters.exclude)?;
-        let mut items = Vec::new();
-        let mut stats = PlanStats::default();
+        let mut includes = rule.filters.include.clone();
+        if rule.filters.selection_mode == SelectionMode::Groups {
+            includes = self.grouped_includes(&paths, rule)?;
+        }
+        let matcher = InclusionMatcher::new(&includes, &rule.filters.exclude)?;
+        let rename = compile_rename_rule(&rule.copy.rename)?;
+        let mut accumulator = PlanAccumulator {
+            items: Vec::new(),
+            stats: PlanStats::default(),
+            claimed_destinations: std::collections::HashSet::new(),
+        };
         let plan_source_root;
         emit_plan_progress(
             &mut progress,
@@ -126,11 +182,11 @@ impl LocalCopyEngine {
             {
                 self.plan_file(
                     rule,
+                    rename.as_ref(),
                     &paths.source,
                     relative,
                     &paths.destination,
-                    &mut items,
-                    &mut stats,
+                    &mut accumulator,
                 )?;
             }
             emit_plan_progress(
@@ -213,20 +269,24 @@ impl LocalCopyEngine {
                 }
                 let file_type = entry.file_type();
                 if file_type.is_symlink() {
-                    stats.warnings += 1;
-                    items.push(PlanItem {
+                    accumulator.stats.warnings += 1;
+                    accumulator.items.push(PlanItem {
                         action: PlanAction::Warn,
                         relative_path: relative.to_owned(),
+                        destination_path: None,
+                        warning: None,
                         size: 0,
                         reason: "symbolic link skipped by policy".into(),
                     });
                 } else if file_type.is_dir() {
                     let target = paths.destination.join(relative);
                     if !target.exists() {
-                        stats.directories_to_create += 1;
-                        items.push(PlanItem {
+                        accumulator.stats.directories_to_create += 1;
+                        accumulator.items.push(PlanItem {
                             action: PlanAction::CreateDirectory,
                             relative_path: relative.to_owned(),
+                            destination_path: None,
+                            warning: None,
                             size: 0,
                             reason: "destination directory does not exist".into(),
                         });
@@ -234,11 +294,11 @@ impl LocalCopyEngine {
                 } else if file_type.is_file() {
                     self.plan_file(
                         rule,
+                        rename.as_ref(),
                         entry.path(),
                         relative,
                         &paths.destination,
-                        &mut items,
-                        &mut stats,
+                        &mut accumulator,
                     )?;
                 }
                 report_completed_entry(
@@ -255,23 +315,24 @@ impl LocalCopyEngine {
             created_at: Utc::now(),
             source_root: plan_source_root,
             destination_root: paths.destination,
-            items,
-            stats,
+            items: accumulator.items,
+            stats: accumulator.stats,
         })
     }
 
     fn plan_file(
         &self,
         rule: &CopyRule,
+        rename: Option<&RenameMatcher>,
         source: &Path,
         relative: &Path,
         destination_root: &Path,
-        items: &mut Vec<PlanItem>,
-        stats: &mut PlanStats,
+        accumulator: &mut PlanAccumulator,
     ) -> Result<()> {
         let source_metadata = fs::metadata(source).at(source)?;
-        let target = destination_root.join(relative);
-        let (action, reason) = match fs::metadata(&target) {
+        let destination_relative = renamed_destination(rename, relative);
+        let target = destination_root.join(&destination_relative);
+        let (mut action, mut reason) = match fs::metadata(&target) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
                 PlanAction::CopyFile,
                 "destination file does not exist".into(),
@@ -313,18 +374,39 @@ impl LocalCopyEngine {
             }
         };
 
+        if action == PlanAction::CopyFile
+            && !accumulator
+                .claimed_destinations
+                .insert(destination_relative.clone())
+        {
+            action = PlanAction::Warn;
+            reason = "multiple source files map to the same destination name".into();
+        }
+
+        // When a rename rule is configured but the file name does not match it,
+        // the file is still copied under its original name; surface that clearly.
+        let warning = (rename.is_some()
+            && action == PlanAction::CopyFile
+            && destination_relative == relative)
+            .then(|| "file name does not match the rename pattern; keeps the original name".into());
+
         match action {
             PlanAction::CopyFile => {
-                stats.files_to_copy += 1;
-                stats.bytes_to_copy += source_metadata.len();
+                accumulator.stats.files_to_copy += 1;
+                accumulator.stats.bytes_to_copy += source_metadata.len();
             }
-            PlanAction::Skip => stats.files_to_skip += 1,
-            PlanAction::Warn => stats.warnings += 1,
+            PlanAction::Skip => accumulator.stats.files_to_skip += 1,
+            PlanAction::Warn => accumulator.stats.warnings += 1,
             PlanAction::CreateDirectory => {}
         }
-        items.push(PlanItem {
+        if warning.is_some() {
+            accumulator.stats.warnings += 1;
+        }
+        accumulator.items.push(PlanItem {
             action,
             relative_path: relative.to_owned(),
+            destination_path: (destination_relative != relative).then_some(destination_relative),
+            warning,
             size: source_metadata.len(),
             reason,
         });
@@ -391,7 +473,11 @@ impl LocalCopyEngine {
                         };
                         let result = (|| {
                             let source = safe_join(source_root, &item.relative_path)?;
-                            let target = safe_join(destination_root, &item.relative_path)?;
+                            let destination = item
+                                .destination_path
+                                .clone()
+                                .unwrap_or_else(|| item.relative_path.clone());
+                            let target = safe_join(destination_root, &destination)?;
                             copy_with_retries(
                                 &source,
                                 &target,
@@ -486,6 +572,18 @@ fn report_completed_entry<F>(
             relative_path: Some(relative.to_owned()),
         },
     );
+}
+
+fn renamed_destination(rename: Option<&RenameMatcher>, relative: &Path) -> PathBuf {
+    match rename.and_then(|rename| {
+        relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| rename.rename(name))
+    }) {
+        Some(name) if !name.is_empty() => relative.with_file_name(name),
+        _ => relative.to_owned(),
+    }
 }
 
 fn should_visit(
@@ -640,7 +738,9 @@ fn record_error(job_id: &Uuid, item: &PlanItem, message: String, errors: &mut Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kfc_core::{EndpointConfig, FilterConfig, RULE_SCHEMA_VERSION, TriggerConfig};
+    use kfc_core::{
+        EndpointConfig, FilterConfig, GroupRule, RULE_SCHEMA_VERSION, RenameRule, TriggerConfig,
+    };
 
     #[cfg(unix)]
     fn create_directory_link(target: &Path, link: &Path) {
@@ -780,6 +880,147 @@ mod tests {
             fs::read(destination.join("cache/keep/copy.txt")).unwrap(),
             b"copy"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn grouped_mode_copies_top_level_files_by_extracted_version() {
+        let root = temp_root("grouped");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Source.zip"), b"zip").unwrap();
+        fs::write(source.join("DSP_2.3.1.0_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_2.3.1.0_Docs.pdf"), b"pdf").unwrap();
+        fs::write(source.join("nested/DSP_1.0.0.1_Extra.exe"), b"exe").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.selection_mode = SelectionMode::Groups;
+        rule.filters.group = Some(GroupRule {
+            label: "Version".into(),
+            pattern: "(\\d+\\.\\d+\\.\\d+\\.\\d+)".into(),
+        });
+        rule.filters.selected_groups = vec!["1.0.0.1".into()];
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 2);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("DSP_1.0.0.1_Release.exe").exists());
+        assert!(destination.join("DSP_1.0.0.1_Source.zip").exists());
+        assert!(!destination.join("DSP_2.3.1.0_Release.exe").exists());
+        assert!(!destination.join("DSP_2.3.1.0_Docs.pdf").exists());
+        assert!(!destination.join("nested/DSP_1.0.0.1_Extra.exe").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_group_pattern_is_rejected() {
+        let root = temp_root("bad-group");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        let mut rule = rule(source, destination);
+        rule.filters.group = Some(GroupRule {
+            label: String::new(),
+            pattern: "[".into(),
+        });
+
+        assert!(matches!(
+            LocalCopyEngine.validate_rule(&rule),
+            Err(KfcError::InvalidRule(_))
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renamed_destination_files_are_copied_with_the_new_name() {
+        let root = temp_root("rename");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("readme.txt"), b"txt").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("DSP_1.0.0.1_Release.exe".into());
+        rule.filters.include.push("readme.txt".into());
+        rule.copy.rename = Some(RenameRule {
+            pattern: "^DSP_(\\d+\\.\\d+\\.\\d+\\.\\d+)_Release\\.(.+)$".into(),
+            destination: "DSP_$1.$2".into(),
+        });
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        let renamed = plan
+            .items
+            .iter()
+            .find(|item| item.destination_path.is_some())
+            .unwrap();
+        assert_eq!(
+            renamed.destination_path.as_deref(),
+            Some(Path::new("DSP_1.0.0.1.exe"))
+        );
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("DSP_1.0.0.1.exe").exists());
+        assert!(!destination.join("DSP_1.0.0.1_Release.exe").exists());
+        assert_eq!(fs::read(destination.join("readme.txt")).unwrap(), b"txt");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rename_collisions_are_reported_as_warnings() {
+        let root = temp_root("rename-collision");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("a_1.0.0.1_x.exe"), b"a").unwrap();
+        fs::write(source.join("b_1.0.0.1_y.exe"), b"b").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("a_1.0.0.1_x.exe".into());
+        rule.filters.include.push("b_1.0.0.1_y.exe".into());
+        rule.copy.rename = Some(RenameRule {
+            pattern: "^[ab]_(\\d+\\.\\d+\\.\\d+\\.\\d+)_.+\\.exe$".into(),
+            destination: "out_$1.exe".into(),
+        });
+        let plan = LocalCopyEngine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 1);
+        assert_eq!(plan.stats.warnings, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unmatched_rename_rule_reports_a_warning() {
+        let root = temp_root("rename-warn");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("readme.txt"), b"txt").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.include.push("readme.txt".into());
+        rule.copy.rename = Some(RenameRule {
+            pattern: "^(.+)_(\\d+\\.\\d+\\.\\d+\\.\\d+)_(.+)\\.(.+)$".into(),
+            destination: "$1_$2.$4".into(),
+        });
+
+        let plan = LocalCopyEngine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 1);
+        assert_eq!(plan.stats.warnings, 1);
+        let item = &plan.items[0];
+        assert_eq!(item.action, PlanAction::CopyFile);
+        assert!(item.warning.is_some());
         fs::remove_dir_all(root).unwrap();
     }
 
