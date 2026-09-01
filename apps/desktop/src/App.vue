@@ -382,6 +382,11 @@ async function run(rule: CopyRule) {
   });
 }
 
+function runCurrentRule() {
+  if (!selectedRule.value) return;
+  void run(selectedRule.value);
+}
+
 async function toggleRuleEnabled(rule: CopyRule) {
   const updated = structuredClone(toRaw(rule));
   updated.enabled = !updated.enabled;
@@ -647,7 +652,7 @@ onMounted(async () => {
           <p v-else-if="sourceEntries.length" class="filter-empty">{{ t('files.noMatch') }}</p>
         </template>
       </section>
-      <section class="card"><div class="toolbar"><h3>{{ t("preview.title") }}</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? t('preview.buttonProgress') : t('preview.button') }}</button></div>
+      <section class="card"><div class="toolbar"><h3>{{ t("preview.title") }}</h3><span></span><button class="primary" :disabled="busy" @click="runCurrentRule">{{ t("action.run") }}</button><button :disabled="busy" @click="preview">{{ previewProgress ? t('preview.buttonProgress') : t('preview.button') }}</button></div>
         <div v-if="previewProgress" class="preview-progress" role="status" aria-live="polite">
           <progress v-if="previewProgress.phase === 'planning'" :value="previewProgress.completedEntries" :max="previewProgress.totalEntries || 1"></progress>
           <progress v-else></progress>
