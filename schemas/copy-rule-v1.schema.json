@@ -19,7 +19,10 @@
       "properties": {
         "include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "includeHidden": { "type": "boolean" }
+        "includeHidden": { "type": "boolean" },
+        "selectionMode": { "enum": ["manual", "groups"] },
+        "group": { "$ref": "#/$defs/groupRule" },
+        "selectedGroups": { "type": "array", "items": { "type": "string", "minLength": 1 } }
       }
     },
     "copy": {
@@ -33,7 +36,8 @@
         "symlinks": { "const": "skip" },
         "preserveMtime": { "type": "boolean" },
         "maxConcurrency": { "type": "integer", "minimum": 1, "maximum": 64 },
-        "retryCount": { "type": "integer", "minimum": 0, "maximum": 20 }
+        "retryCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "rename": { "$ref": "#/$defs/renameRule" }
       }
     },
     "trigger": { "$ref": "#/$defs/trigger" }
@@ -44,6 +48,24 @@
       "additionalProperties": false,
       "required": ["type", "path"],
       "properties": { "type": { "const": "local" }, "path": { "type": "string", "minLength": 1 } }
+    },
+    "groupRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern"],
+      "properties": {
+        "label": { "type": "string" },
+        "pattern": { "type": "string", "minLength": 1 }
+      }
+    },
+    "renameRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "destination"],
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1 },
+        "destination": { "type": "string", "minLength": 1 }
+      }
     },
     "trigger": {
       "oneOf": [

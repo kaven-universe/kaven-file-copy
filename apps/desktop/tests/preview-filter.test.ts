@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPreviewTree, filterPlanItems } from "../src/preview-filter";
+import { buildPreviewTree, filterPlanItems, sortPreviewItems } from "../src/preview-filter";
 import type { PlanItem } from "../src/types/generated";
 
 const items: PlanItem[] = [
@@ -42,4 +42,27 @@ test("preview tree normalizes separators and creates implicit directories", () =
   assert.equal(root.relativePath, "src");
   assert.equal(root.children[0].relativePath, "src/components");
   assert.equal(root.children[0].children[0].relativePath, "src/components/App.vue");
+});
+
+test("preview items sort by action, source, target, and description", () => {
+  const entries: PlanItem[] = [
+    { action: "copy-file", relativePath: "m.txt", destinationPath: "a_renamed.txt", size: 1, reason: "z reason" },
+    { action: "copy-file", relativePath: "a.txt", destinationPath: "z_renamed.txt", size: 1, reason: "a reason" },
+    { action: "skip", relativePath: "c.txt", size: 1, reason: "m reason" },
+  ];
+
+  const bySource = sortPreviewItems(entries, "source", "asc");
+  assert.deepEqual(bySource.map((item) => item.relativePath), ["a.txt", "c.txt", "m.txt"]);
+
+  const byAction = sortPreviewItems(entries, "action", "asc");
+  assert.deepEqual(byAction.map((item) => item.relativePath), ["a.txt", "m.txt", "c.txt"]);
+
+  const byTarget = sortPreviewItems(entries, "target", "asc");
+  assert.deepEqual(byTarget.map((item) => item.relativePath), ["m.txt", "c.txt", "a.txt"]);
+
+  const byDescription = sortPreviewItems(entries, "description", "asc");
+  assert.deepEqual(byDescription.map((item) => item.relativePath), ["a.txt", "c.txt", "m.txt"]);
+
+  const bySourceDesc = sortPreviewItems(entries, "source", "desc");
+  assert.deepEqual(bySourceDesc.map((item) => item.relativePath), ["m.txt", "c.txt", "a.txt"]);
 });
