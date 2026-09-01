@@ -1,5 +1,8 @@
 // Contract mirror for schemaVersion 1. Replace with generated output once the schema generator is wired into CI.
 export type EndpointConfig = { type: "local"; path: string };
+export interface GroupRule { label: string; pattern: string }
+export interface RenameRule { pattern: string; destination: string }
+export type SelectionMode = "manual" | "groups";
 export type TriggerConfig =
   | { type: "manual" }
   | { type: "watch"; debounceMs: number }
@@ -13,7 +16,14 @@ export interface CopyRule {
   enabled: boolean;
   source: EndpointConfig;
   destination: EndpointConfig;
-  filters: { include: string[]; exclude: string[]; includeHidden: boolean };
+  filters: {
+    include: string[];
+    exclude: string[];
+    includeHidden: boolean;
+    group: GroupRule | null;
+    selectedGroups: string[];
+    selectionMode: SelectionMode;
+  };
   copy: {
     mode: "incremental";
     compare: "size-and-mtime" | "size-only";
@@ -22,6 +32,7 @@ export interface CopyRule {
     preserveMtime: boolean;
     maxConcurrency: number;
     retryCount: number;
+    rename: RenameRule | null;
   };
   trigger: TriggerConfig;
 }
@@ -35,7 +46,13 @@ export interface PlanStats {
 }
 
 export type PlanAction = "create-directory" | "copy-file" | "skip" | "warn";
-export interface PlanItem { action: PlanAction; relativePath: string; size: number; reason: string }
+export interface PlanItem {
+  action: PlanAction;
+  relativePath: string;
+  destinationPath?: string;
+  size: number;
+  reason: string;
+}
 export interface CopyPlan { ruleId: string; items: PlanItem[]; stats: PlanStats }
 export interface PlanProgressEvent {
   phase: "scanning" | "planning";
