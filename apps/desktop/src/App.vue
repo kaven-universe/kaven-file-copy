@@ -31,6 +31,7 @@ const view = ref<View>("rules");
 const rules = ref<CopyRule[]>([]);
 const jobs = ref<JobSummary[]>([]);
 const selectedRule = ref<CopyRule | null>(null);
+const originalRule = ref<CopyRule | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
@@ -140,7 +141,9 @@ async function rememberRulePaths(rule: CopyRule) {
 }
 
 function edit(rule?: CopyRule) {
-  const copy = structuredClone(rule ? toRaw(rule) : newRule());
+  const base = rule ? toRaw(rule) : newRule();
+  originalRule.value = structuredClone(base);
+  const copy = structuredClone(base);
   copy.filters.include ??= [];
   copy.filters.exclude ??= [];
   copy.filters.group ??= null;
@@ -299,6 +302,18 @@ const renameExample = computed(() => {
   return `${first} does not match the pattern; it will be copied as-is.`;
 });
 
+function cancelEdit() {
+  if (!selectedRule.value) {
+    view.value = "rules";
+    return;
+  }
+  const dirty = JSON.stringify(toRaw(selectedRule.value)) !== JSON.stringify(originalRule.value);
+  if (dirty && !confirm("Discard unsaved changes to this rule?")) {
+    return;
+  }
+  view.value = "rules";
+}
+
 async function persist() {
   if (!selectedRule.value) return;
   await act(async () => {
@@ -329,11 +344,6 @@ async function preview() {
   } finally {
     previewProgress.value = null;
   }
-}
-
-async function previewSavedRule(rule: CopyRule) {
-  edit(rule);
-  await preview();
 }
 
 async function run(rule: CopyRule) {
@@ -421,13 +431,13 @@ onMounted(async () => {
     <main v-if="view === 'rules'">
       <div class="toolbar"><h2>Copy rules</h2><span></span><button @click="importRule">Import</button><button class="primary" @click="edit()">New rule</button></div>
       <div v-if="!rules.length" class="empty">No rules yet. Create one to start copying.</div>
-      <article v-for="rule in rules" :key="rule.id" class="card rule-card">
+      <article v-for="rule in rules" :key="rule.id" class="card rule-card" title="Click to edit this rule" @click="edit(rule)">
         <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ rule.trigger.type }} · {{ rule.enabled ? 'enabled' : 'disabled' }}</small></div>
-        <div class="actions"><button @click="exportRule(rule)">Export</button><button @click="duplicateRule(rule)">Duplicate</button><button :disabled="busy" @click="previewSavedRule(rule)">Preview</button><button @click="edit(rule)">Edit</button><button :disabled="busy" @click="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click="run(rule)">Run</button></div>
+        <div class="actions"><button @click.stop="exportRule(rule)">Export</button><button @click.stop="duplicateRule(rule)">Duplicate</button><button :disabled="busy" @click.stop="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click.stop="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click.stop="run(rule)">Run</button></div>
       </article>
     </main>
     <main v-else-if="view === 'editor' && selectedRule">
-      <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="view='rules'">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
+      <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="cancelEdit">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
       <section class="card form-grid">
         <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
         <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
