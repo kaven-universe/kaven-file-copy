@@ -7,7 +7,8 @@ const STORAGE_KEY = "kfc-locale";
 const messages: Record<string, Record<Locale, string>> = {
   "app.tagline": { en: "Safe, reusable local copy rules", zh: "安全、可复用的本地复制规则" },
   "nav.rules": { en: "Rules", zh: "规则" },
-  "nav.jobs": { en: "Jobs", zh: "任务" },
+  "nav.jobs": { en: "Logs", zh: "日志" },
+  "nav.aria": { en: "Views", zh: "视图" },
   "lang.aria": { en: "Language", zh: "语言" },
 
   "rules.title": { en: "Copy rules", zh: "复制规则" },
@@ -126,6 +127,7 @@ const messages: Record<string, Record<Locale, string>> = {
 
   "jobs.title": { en: "Job history", zh: "任务历史" },
   "jobs.current": { en: "Current job", zh: "当前任务" },
+  "run.title": { en: "Copying…", zh: "复制中…" },
   "jobs.progress": { en: "{completed} / {total} files · {path}", zh: "{completed} / {total} 个文件 · {path}" },
   "jobs.summary": { en: "{copied} copied · {skipped} skipped · {failed} failed · {bytes} bytes", zh: "已复制 {copied} 个 · 跳过 {skipped} 个 · 失败 {failed} 个 · {bytes} 字节" },
   "jobs.log": { en: "Detailed log", zh: "详细日志" },
