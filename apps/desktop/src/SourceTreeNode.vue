@@ -6,6 +6,7 @@ const props = withDefaults(defineProps<{
   node: SourceTreeNode;
   includedPaths: ReadonlySet<string>;
   excludedPaths: ReadonlySet<string>;
+  renames?: ReadonlyMap<string, string>;
   expandAll?: boolean;
   depth?: number;
   ancestorIncluded?: boolean;
@@ -13,6 +14,7 @@ const props = withDefaults(defineProps<{
   depth: 0,
   ancestorIncluded: false,
   expandAll: false,
+  renames: () => new Map<string, string>(),
 });
 
 const emit = defineEmits<{
@@ -80,6 +82,7 @@ function forwardInclusion(path: string, checked: boolean) {
       <span class="source-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">
         {{ node.name }}
       </span>
+      <small v-if="!node.directory && renames.has(node.relativePath)" class="source-tree-rename">→ {{ renames.get(node.relativePath) }}</small>
       <small class="source-tree-meta">
         <template v-if="!node.directory">{{ formatBytes(node.size) }} · </template>{{ formatModified(node.modified) }}
       </small>
@@ -91,6 +94,7 @@ function forwardInclusion(path: string, checked: boolean) {
         :node="child"
         :included-paths="includedPaths"
         :excluded-paths="excludedPaths"
+        :renames="renames"
         :expand-all="expandAll"
         :depth="depth + 1"
         :ancestor-included="effectivelyIncluded"

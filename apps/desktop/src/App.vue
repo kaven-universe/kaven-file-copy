@@ -7,7 +7,10 @@ import { api } from "./api/tauri";
 import { buildPreviewTree, filterPlanItems, type PreviewActionFilter, type PreviewView } from "./preview-filter";
 import PreviewTreeNode from "./PreviewTreeNode.vue";
 import SourceTreeNode from "./SourceTreeNode.vue";
+import GroupTreeNode from "./GroupTreeNode.vue";
 import {
+  applyRename,
+  buildGroupTree,
   buildSourceTree,
   filterSourceEntries,
   formatBytes,
@@ -22,7 +25,7 @@ import {
   type SourceView,
   type SortDirection,
 } from "./source-tree";
-import type { CopyPlan, CopyRule, JobEvent, JobSummary, PlanProgressEvent, ProgressEvent, RecentPaths, SourceEntry } from "./types/generated";
+import type { CopyPlan, CopyRule, JobEvent, JobSummary, PlanProgressEvent, ProgressEvent, RecentPaths, SelectionMode, SourceEntry } from "./types/generated";
 
 type View = "rules" | "editor" | "jobs";
 const view = ref<View>("rules");
@@ -33,6 +36,8 @@ const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
 const sourceView = ref<SourceView>("tree");
+const groupView = ref<"tree" | "list">("tree");
+const sourceMode = ref<SelectionMode>("manual");
 const sourceSortKey = ref<SourceSortKey>("name");
 const sourceSortDirection = ref<SortDirection>("asc");
 const recentPaths = ref<RecentPaths>({ sources: [], destinations: [] });
@@ -60,7 +65,35 @@ const sourceSort = computed<SourceSort>(() => ({
   direction: sourceSortDirection.value,
 }));
 const sortedSourceFiles = computed(() => sortSourceEntries(sourceFiles.value, sourceSort.value));
+const sourceRenames = computed(() => {
+  const rename = selectedRule.value?.copy.rename;
+  const map = new Map<string, string>();
+  if (!rename) return map;
+  for (const entry of sourceEntries.value) {
+    if (entry.directory) continue;
+    const fileName = normalizeTreePath(entry.relativePath).split("/").pop() ?? "";
+    const newName = applyRename(rename.pattern, rename.destination, fileName);
+    if (newName && newName !== fileName) map.set(entry.relativePath, newName);
+  }
+  return map;
+});
 const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value));
+const groupTree = computed(() => buildGroupTree(
+  filteredSourceEntries.value,
+  selectedRule.value?.filters.group ?? null,
+  selectedRule.value?.filters.selectedGroups ?? [],
+  sourceQuery.value,
+));
+const groupFileRows = computed(() => groupTree.value.flatMap((group) =>
+  group.matched.map((file) => ({
+    ...file,
+    groupKey: group.key,
+    groupLabel: group.key
+      ? (group.label ? `${group.label} ${group.key}` : group.key)
+      : group.label,
+    selected: group.selected,
+  })),
+));
 const sourceFilterActive = computed(() => sourceQuery.value.trim().length > 0);
 const filteredPlanItems = computed(() => filterPlanItems(
   plan.value?.items ?? [],
@@ -76,8 +109,8 @@ function newRule(): CopyRule {
   return {
     schemaVersion: 1, id: crypto.randomUUID(), name: "New copy rule", enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
-    filters: { exclude: [], include: [], includeHidden: true },
-    copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2 },
+    filters: { exclude: [], include: [], includeHidden: true, group: null, selectedGroups: [], selectionMode: "manual" },
+    copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2, rename: null },
     trigger: { type: "manual" },
   };
 }
@@ -108,6 +141,12 @@ async function rememberRulePaths(rule: CopyRule) {
 function edit(rule?: CopyRule) {
   const copy = structuredClone(rule ? toRaw(rule) : newRule());
   copy.filters.include ??= [];
+  copy.filters.exclude ??= [];
+  copy.filters.group ??= null;
+  copy.filters.selectedGroups ??= [];
+  copy.filters.selectionMode ??= "manual";
+  copy.copy.rename ??= null;
+  sourceMode.value = copy.filters.selectionMode;
   selectedRule.value = reactive(copy);
   sourceEntries.value = [];
   sourceQuery.value = "";
@@ -182,6 +221,67 @@ function ariaSort(key: SourceSortKey) {
     ? (sourceSortDirection.value === "asc" ? "ascending" : "descending")
     : "none";
 }
+
+function setSourceMode(mode: SelectionMode) {
+  sourceMode.value = mode;
+  if (!selectedRule.value) return;
+  selectedRule.value.filters.selectionMode = mode;
+  if (mode === "groups" && !selectedRule.value.filters.group) {
+    addGroupRule();
+  }
+}
+
+function addGroupRule() {
+  if (!selectedRule.value) return;
+  selectedRule.value.filters.group = {
+    label: "",
+    pattern: "(\\d+\\.\\d+\\.\\d+\\.\\d+)",
+  };
+}
+
+function removeGroupRule() {
+  if (!selectedRule.value) return;
+  selectedRule.value.filters.group = null;
+  selectedRule.value.filters.selectedGroups = [];
+}
+
+function toggleGroup(name: string, checked: boolean) {
+  if (!selectedRule.value) return;
+  const selected = new Set(selectedRule.value.filters.selectedGroups);
+  if (checked) {
+    selected.add(name);
+  } else {
+    selected.delete(name);
+  }
+  selectedRule.value.filters.selectedGroups = [...selected];
+}
+
+function addRename() {
+  if (!selectedRule.value) return;
+  selectedRule.value.copy.rename = {
+    pattern: "^(.+)_(\\d+\\.\\d+\\.\\d+\\.\\d+)_(.+)\\.(.+)$",
+    destination: "$1_$2.$4",
+  };
+}
+
+function removeRename() {
+  if (!selectedRule.value) return;
+  selectedRule.value.copy.rename = null;
+}
+
+const renameExample = computed(() => {
+  const rename = selectedRule.value?.copy.rename;
+  if (!rename) return "";
+  const first = sourceEntries.value.find(
+    (entry) => !entry.directory && !normalizeTreePath(entry.relativePath).includes("/"),
+  );
+  if (!first) return "Browse the source tree to preview the renamed name.";
+  const name = normalizeTreePath(first.relativePath).split("/").pop() ?? "";
+  const newName = applyRename(rename.pattern, rename.destination, name);
+  return newName && newName !== name
+    ? `${name} → ${newName}`
+    : `${name} does not match the pattern; it will be copied as-is.`;
+});
 
 async function persist() {
   if (!selectedRule.value) return;
@@ -327,10 +427,26 @@ onMounted(async () => {
         <label class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>Rule enabled</span></label>
         <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>Include hidden files</span></label>
         <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
+        <label class="wide">Destination name
+          <div class="field-action">
+            <template v-if="selectedRule.copy.rename">
+              <input v-model="selectedRule.copy.rename.pattern" placeholder="Source name pattern, e.g. ^(.+)_(\d+\.\d+\.\d+\.\d+)_(.+)\.(.+)$" aria-label="Source name pattern" />
+              <input v-model="selectedRule.copy.rename.destination" placeholder="Destination template, e.g. $1_$2.$4" aria-label="Destination template" />
+              <button type="button" @click="removeRename">Remove</button>
+            </template>
+            <button v-else type="button" class="add-group" @click="addRename">Add rename rule</button>
+          </div>
+          <small class="hint">Match the source file name with a regex; $1..$9 in the template become capture groups.</small>
+          <small v-if="renameExample" class="hint rename-example">{{ renameExample }}</small>
+        </label>
         <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">Automatic jobs run only while the desktop application is open.</p>
       </section>
-      <section class="card"><div class="toolbar"><h3>Files to copy</h3><span></span><button @click="browseSource">Browse source tree</button></div>
-        <p class="hint">Check the files and folders to copy. Nothing is copied until you make a selection; unchecked entries are skipped.</p>
+      <section class="card"><div class="toolbar"><h3>Files to copy</h3><span></span><div class="view-switch" role="group" aria-label="Selection mode">
+        <button type="button" :class="{ active: sourceMode === 'manual' }" :aria-pressed="sourceMode === 'manual'" @click="setSourceMode('manual')">Manual</button>
+        <button type="button" :class="{ active: sourceMode === 'groups' }" :aria-pressed="sourceMode === 'groups'" @click="setSourceMode('groups')">Group</button>
+      </div><button @click="browseSource">Browse source tree</button></div>
+        <p class="hint">{{ sourceMode === 'manual' ? 'Check the files and folders to copy. Nothing is copied until you make a selection; unchecked entries are skipped.' : 'Group mode extracts a version from each top-level file name; select the versions to copy.' }}</p>
+        <template v-if="sourceMode === 'manual'">
         <div v-if="sourceEntries.length" class="result-filters source-filters" role="search">
           <input v-model="sourceQuery" type="search" placeholder="Filter source path" aria-label="Filter source entries by path" />
           <div class="view-switch" role="group" aria-label="Source layout">
@@ -346,6 +462,7 @@ onMounted(async () => {
             :node="node"
             :included-paths="pathInclusions"
             :excluded-paths="pathExclusions"
+            :renames="sourceRenames"
             :expand-all="sourceFilterActive"
             @toggle-included="toggleIncluded"
           />
@@ -388,6 +505,7 @@ onMounted(async () => {
                       @change="toggleIncluded(entry.relativePath, ($event.target as HTMLInputElement).checked)"
                     />
                     <span :title="entry.relativePath">{{ entry.relativePath }}</span>
+                    <small v-if="sourceRenames.get(entry.relativePath)" class="source-list-rename">→ {{ sourceRenames.get(entry.relativePath) }}</small>
                   </label>
                 </td>
                 <td class="num">{{ formatBytes(entry.size) }}</td>
@@ -397,6 +515,75 @@ onMounted(async () => {
           </table>
         </div>
         <p v-else-if="sourceEntries.length" class="filter-empty">{{ sourceView === 'list' ? 'No files match the current filter.' : 'No source entries match the current filter.' }}</p>
+        </template>
+        <template v-else>
+          <div class="group-rules">
+            <div v-if="selectedRule.filters.group" class="field-action">
+              <input v-model="selectedRule.filters.group.label" placeholder="Label (optional)" aria-label="Group label" />
+              <input v-model="selectedRule.filters.group.pattern" placeholder="Version pattern, e.g. (\\d+\\.\\d+\\.\\d+\\.\\d+)" aria-label="Version pattern" />
+              <button type="button" @click="removeGroupRule">Remove</button>
+            </div>
+            <button v-else type="button" class="add-group" @click="addGroupRule">Add rule</button>
+          </div>
+          <div v-if="groupTree.length" class="result-filters source-filters" role="search">
+            <input v-model="sourceQuery" type="search" placeholder="Filter group or file" aria-label="Filter groups and files" />
+            <div class="view-switch" role="group" aria-label="Group layout">
+              <button type="button" :class="{ active: groupView === 'list' }" :aria-pressed="groupView === 'list'" @click="groupView = 'list'">List</button>
+              <button type="button" :class="{ active: groupView === 'tree' }" :aria-pressed="groupView === 'tree'" @click="groupView = 'tree'">Tree</button>
+            </div>
+            <small>{{ groupTree.length }} groups</small>
+          </div>
+          <ul v-if="groupView === 'tree' && groupTree.length" class="group-tree" role="tree" aria-label="File groups">
+            <GroupTreeNode
+              v-for="group in groupTree"
+              :key="group.key"
+              :group="group"
+              :renames="sourceRenames"
+              :expand-all="sourceFilterActive"
+              @toggle-group="toggleGroup"
+            />
+          </ul>
+          <div v-else-if="groupView === 'list' && groupFileRows.length" class="source-list-wrap">
+            <table class="source-list">
+              <colgroup>
+                <col />
+                <col class="group-col" />
+                <col class="size-col" />
+                <col class="modified-col" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Group</th>
+                  <th class="num">Size</th>
+                  <th class="num">Modified</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in groupFileRows" :key="row.relativePath">
+                  <td>
+                    <label class="source-list-name">
+                      <input
+                        v-if="row.groupKey"
+                        type="checkbox"
+                        :checked="row.selected"
+                        :aria-label="`Include group ${row.groupKey}`"
+                        @change="toggleGroup(row.groupKey, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span v-else class="tree-spacer" aria-hidden="true"></span>
+                      <span :title="row.relativePath">{{ row.relativePath }}</span>
+                      <small v-if="sourceRenames.get(row.relativePath)" class="source-list-rename">→ {{ sourceRenames.get(row.relativePath) }}</small>
+                    </label>
+                  </td>
+                  <td>{{ row.groupLabel }}</td>
+                  <td class="num">{{ formatBytes(row.size) }}</td>
+                  <td class="num">{{ formatModified(row.modified) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else-if="sourceEntries.length" class="filter-empty">No files match the current filter.</p>
+        </template>
       </section>
       <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? 'Previewing...' : 'Preview' }}</button></div>
         <div v-if="previewProgress" class="preview-progress" role="status" aria-live="polite">
@@ -420,7 +607,7 @@ onMounted(async () => {
           </div>
           <small>{{ filteredPlanItems.length }} of {{ plan.items.length }} items</small>
         </div>
-        <div v-if="plan && filteredPlanItems.length && previewView === 'list'" class="plan"><div v-for="item in filteredPlanItems" :key="`${item.action}-${item.relativePath}`"><code>{{ item.action }}</code> {{ item.relativePath }} <small>{{ item.reason }}</small></div></div>
+        <div v-if="plan && filteredPlanItems.length && previewView === 'list'" class="plan"><div v-for="item in filteredPlanItems" :key="`${item.action}-${item.relativePath}`"><code>{{ item.action }}</code> <span :class="{ renamed: item.destinationPath && item.destinationPath !== item.relativePath }">{{ item.destinationPath ?? item.relativePath }}</span><small v-if="item.destinationPath && item.destinationPath !== item.relativePath">from {{ item.relativePath }}</small><small>{{ item.reason }}</small></div></div>
         <ul v-else-if="plan && filteredPlanItems.length" class="preview-tree" role="tree" aria-label="Preview plan tree">
           <PreviewTreeNode
             v-for="node in previewTree"
