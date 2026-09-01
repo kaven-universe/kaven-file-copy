@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { api } from "./api/tauri";
+import { locale, setLocale, t } from "./i18n";
 import { filterPlanItems, sortPreviewItems, type PreviewActionFilter, type PreviewSortDirection, type PreviewSortKey } from "./preview-filter";
 import SourceTreeNode from "./SourceTreeNode.vue";
 import GroupTreeNode from "./GroupTreeNode.vue";
@@ -32,7 +33,7 @@ const rules = ref<CopyRule[]>([]);
 const jobs = ref<JobSummary[]>([]);
 const selectedRule = ref<CopyRule | null>(null);
 const originalRule = ref<CopyRule | null>(null);
-const confirmDialog = ref<{ title: string; message: string; onConfirm: () => void } | null>(null);
+const confirmDialog = ref<{ title: string; message: string; onConfirm: () => void; onCancel?: () => void } | null>(null);
 const plan = ref<CopyPlan | null>(null);
 const sourceEntries = ref<SourceEntry[]>([]);
 const sourceQuery = ref("");
@@ -92,7 +93,7 @@ const groupFileRows = computed(() => groupTree.value.flatMap((group) =>
     groupKey: group.key,
     groupLabel: group.key
       ? (group.label ? `${group.label} ${group.key}` : group.key)
-      : group.label,
+      : t("files.groupOther"),
     selected: group.selected,
   })),
 ));
@@ -108,9 +109,16 @@ const sortedPlanItems = computed(() => sortPreviewItems(
   previewSortDirection.value,
 ));
 
+const triggerLabelKeys: Record<string, string> = {
+  manual: "editor.trigger.manual",
+  watch: "editor.trigger.watch",
+  interval: "editor.trigger.interval",
+  cron: "editor.trigger.cron",
+};
+
 function newRule(): CopyRule {
   return {
-    schemaVersion: 1, id: crypto.randomUUID(), name: "New copy rule", enabled: true,
+    schemaVersion: 1, id: crypto.randomUUID(), name: t("defaults.newRuleName"), enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
     filters: { exclude: [], include: [], includeHidden: true, group: null, selectedGroups: [], selectionMode: "manual" },
     copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2, rename: null },
@@ -123,7 +131,7 @@ async function refresh() {
   try {
     recentPaths.value = await api.getRecentPaths();
   } catch (error) {
-    message.value = `Could not load recent paths: ${String(error)}`;
+    message.value = t("msg.loadRecentPaths", { error: String(error) });
   }
 }
 
@@ -132,7 +140,7 @@ async function rememberRecentPath(kind: "source" | "destination", path: string) 
   try {
     recentPaths.value = await api.rememberRecentPath(kind, path);
   } catch (error) {
-    message.value = `Could not update recent paths: ${String(error)}`;
+    message.value = t("msg.updateRecentPaths", { error: String(error) });
   }
 }
 
@@ -292,24 +300,26 @@ const renameExample = computed(() => {
   const rename = selectedRule.value?.copy.rename;
   if (!rename) return "";
   const files = sourceEntries.value.filter((entry) => !entry.directory);
-  if (files.length === 0) return "Browse the source tree to preview the renamed name.";
+  if (files.length === 0) return t("rename.previewBrowse");
   for (const entry of files) {
     const fileName = normalizeTreePath(entry.relativePath).split("/").pop() ?? "";
     const newName = applyRename(rename.pattern, rename.destination, fileName);
     if (newName && newName !== fileName) return `${fileName} → ${newName}`;
   }
   const first = normalizeTreePath(files[0].relativePath).split("/").pop() ?? "";
-  return `${first} does not match the pattern; it will be copied as-is.`;
+  return t("rename.noMatch", { name: first });
 });
 
-function askConfirm(title: string, message: string, onConfirm: () => void) {
-  confirmDialog.value = { title, message, onConfirm };
+function askConfirm(title: string, message: string, onConfirm: () => void, onCancel?: () => void) {
+  confirmDialog.value = { title, message, onConfirm, onCancel };
 }
 
 function resolveConfirm(confirmed: boolean) {
   const dialog = confirmDialog.value;
   confirmDialog.value = null;
-  if (dialog && confirmed) dialog.onConfirm();
+  if (!dialog) return;
+  if (confirmed) dialog.onConfirm();
+  else if (dialog.onCancel) dialog.onCancel();
 }
 
 function cancelEdit() {
@@ -320,8 +330,8 @@ function cancelEdit() {
   const dirty = JSON.stringify(toRaw(selectedRule.value)) !== JSON.stringify(originalRule.value);
   if (dirty) {
     askConfirm(
-      "Discard changes?",
-      "You have unsaved changes to this rule. Discard them and leave the editor?",
+      t("dialog.discardTitle"),
+      t("dialog.discardMessage"),
       () => { view.value = "rules"; },
     );
   } else {
@@ -381,14 +391,14 @@ async function toggleRuleEnabled(rule: CopyRule) {
 function duplicateRule(rule: CopyRule) {
   const copy = structuredClone(toRaw(rule));
   copy.id = crypto.randomUUID();
-  copy.name = `${copy.name} (copy)`;
+  copy.name = `${copy.name} (${t("suffix.copy")})`;
   edit(copy);
 }
 
 function removeRule(rule: CopyRule) {
   askConfirm(
-    "Delete rule?",
-    `Delete rule “${rule.name}”? Copied files will not be deleted.`,
+    t("dialog.deleteTitle"),
+    t("dialog.deleteMessage", { name: rule.name }),
     async () => {
       await act(async () => { await api.deleteRule(rule.id); await refresh(); });
     },
@@ -410,19 +420,25 @@ async function exportRule(rule: CopyRule) {
 }
 
 async function importRule() {
-  const path = await open({ multiple: false, filters: [{ name: "KFC rule", extensions: ["json"] }] });
+  const path = await open({ multiple: false, filters: [{ name: t("import.filterName"), extensions: ["json"] }] });
   if (!path) return;
   await act(async () => {
     const rule = JSON.parse(await readTextFile(path)) as CopyRule;
     await api.validateRule(rule);
     if (rules.value.some((existing) => existing.id === rule.id)) {
-      const overwrite = confirm(`A rule named “${rule.name}” already uses this ID. Select OK to overwrite it, or Cancel to import a new copy.`);
-      if (!overwrite) {
-        rule.id = crypto.randomUUID();
-        rule.name = `${rule.name} (imported)`;
-      }
+      askConfirm(
+        t("dialog.importConflictTitle"),
+        t("dialog.importConflictMessage", { name: rule.name }),
+        () => { edit(rule); },
+        () => {
+          rule.id = crypto.randomUUID();
+          rule.name = `${rule.name} (${t("suffix.imported")})`;
+          edit(rule);
+        },
+      );
+    } else {
+      edit(rule);
     }
-    edit(rule);
   });
 }
 
@@ -446,62 +462,62 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <header><div><h1>Kaven File Copy</h1><p>Safe, reusable local copy rules</p></div><nav><button @click="view='rules'">Rules</button><button @click="view='jobs'">Jobs</button></nav></header>
+    <header><div><h1>Kaven File Copy</h1><p>{{ t("app.tagline") }}</p></div><nav><button @click="view='rules'">{{ t("nav.rules") }}</button><button @click="view='jobs'">{{ t("nav.jobs") }}</button></nav><div class="view-switch lang-switch" role="group" :aria-label="t('lang.aria')"><button type="button" :class="{ active: locale === 'en' }" :aria-pressed="locale === 'en'" @click="setLocale('en')">EN</button><button type="button" :class="{ active: locale === 'zh' }" :aria-pressed="locale === 'zh'" @click="setLocale('zh')">中文</button></div></header>
     <p v-if="message" class="error">{{ message }}</p>
     <main v-if="view === 'rules'">
-      <div class="toolbar"><h2>Copy rules</h2><span></span><button @click="importRule">Import</button><button class="primary" @click="edit()">New rule</button></div>
-      <div v-if="!rules.length" class="empty">No rules yet. Create one to start copying.</div>
-      <article v-for="rule in rules" :key="rule.id" class="card rule-card" title="Click to edit this rule" @click="edit(rule)">
-        <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ rule.trigger.type }}{{ rule.trigger.type !== 'manual' ? ' · ' + (rule.enabled ? 'enabled' : 'disabled') : '' }}</small></div>
-        <div class="actions"><button @click.stop="exportRule(rule)">Export</button><button @click.stop="duplicateRule(rule)">Duplicate</button><button v-if="rule.trigger.type !== 'manual'" :disabled="busy" @click.stop="toggleRuleEnabled(rule)">{{ rule.enabled ? 'Disable' : 'Enable' }}</button><button @click.stop="removeRule(rule)">Delete</button><button class="primary" :disabled="busy" @click.stop="run(rule)">Run</button></div>
+      <div class="toolbar"><h2>{{ t("rules.title") }}</h2><span></span><button @click="importRule">{{ t("action.import") }}</button><button class="primary" @click="edit()">{{ t("action.newRule") }}</button></div>
+      <div v-if="!rules.length" class="empty">{{ t("rules.empty") }}</div>
+      <article v-for="rule in rules" :key="rule.id" class="card rule-card" :title="t('rules.clickToEdit')" @click="edit(rule)">
+        <div><h3>{{ rule.name }}</h3><p>{{ rule.source.path }} <strong>→</strong> {{ rule.destination.path }}</p><small>{{ t(triggerLabelKeys[rule.trigger.type] ?? rule.trigger.type) }}{{ rule.trigger.type !== 'manual' ? ' · ' + (rule.enabled ? t('rules.status.enabled') : t('rules.status.disabled')) : '' }}</small></div>
+        <div class="actions"><button @click.stop="exportRule(rule)">{{ t("action.export") }}</button><button @click.stop="duplicateRule(rule)">{{ t("action.duplicate") }}</button><button v-if="rule.trigger.type !== 'manual'" :disabled="busy" @click.stop="toggleRuleEnabled(rule)">{{ rule.enabled ? t('action.disable') : t('action.enable') }}</button><button @click.stop="removeRule(rule)">{{ t("action.delete") }}</button><button class="primary" :disabled="busy" @click.stop="run(rule)">{{ t("action.run") }}</button></div>
       </article>
     </main>
     <main v-else-if="view === 'editor' && selectedRule">
-      <div class="toolbar"><h2>Edit rule</h2><span></span><button @click="cancelEdit">Cancel</button><button class="primary" :disabled="busy" @click="persist">Save</button></div>
+      <div class="toolbar"><h2>{{ t("editor.title") }}</h2><span></span><button @click="cancelEdit">{{ t("action.cancel") }}</button><button class="primary" :disabled="busy" @click="persist">{{ t("action.save") }}</button></div>
       <section class="card form-grid">
-        <label class="wide">Rule name<input v-model="selectedRule.name" /></label>
-        <label class="wide">Source<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">Choose file</button><button @click="choosePath('source', true)">Choose folder</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
-        <label class="wide">Destination<div class="field-action"><input v-model="selectedRule.destination.path" list="recent-destination-paths" autocomplete="off" /><button @click="choosePath('destination', true)">Browse</button></div><datalist id="recent-destination-paths"><option v-for="path in recentPaths.destinations" :key="path" :value="path"></option></datalist></label>
-        <label>Compare<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">Size and modified time</option><option value="size-only">Size only</option></select></label>
-        <label>Overwrite<select v-model="selectedRule.copy.overwrite"><option value="if-changed">If changed</option><option value="never">Never</option><option value="always">Always</option></select></label>
-        <label>Trigger<select :value="selectedRule.trigger.type" @change="changeTrigger"><option value="manual">Manual</option><option value="watch">Watch changes</option><option value="interval">Fixed interval</option><option value="cron">Cron</option></select></label>
-        <label>Concurrency<input v-model.number="selectedRule.copy.maxConcurrency" type="number" min="1" max="64" /></label>
-        <label>Retries<input v-model.number="selectedRule.copy.retryCount" type="number" min="0" max="20" /></label>
-        <label v-if="selectedRule.trigger.type === 'watch'">Debounce (ms)<input v-model.number="selectedRule.trigger.debounceMs" type="number" min="100" /></label>
-        <label v-if="selectedRule.trigger.type === 'interval'">Interval (seconds)<input v-model.number="selectedRule.trigger.seconds" type="number" min="1" /></label>
-        <label v-if="selectedRule.trigger.type === 'cron'" class="wide">Cron expression<input v-model="selectedRule.trigger.expression" /></label>
-        <label v-if="selectedRule.trigger.type !== 'manual'" class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>Rule enabled</span></label>
-        <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>Include hidden files</span></label>
-        <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>Preserve modification times</span></label>
-        <label class="wide">Destination name
+        <label class="wide">{{ t("editor.name") }}<input v-model="selectedRule.name" /></label>
+        <label class="wide">{{ t("editor.source") }}<div class="field-action"><input v-model="selectedRule.source.path" list="recent-source-paths" autocomplete="off" @change="clearSourceBrowser" /><button @click="choosePath('source', false)">{{ t("editor.chooseFile") }}</button><button @click="choosePath('source', true)">{{ t("editor.chooseFolder") }}</button></div><datalist id="recent-source-paths"><option v-for="path in recentPaths.sources" :key="path" :value="path"></option></datalist></label>
+        <label class="wide">{{ t("editor.destination") }}<div class="field-action"><input v-model="selectedRule.destination.path" list="recent-destination-paths" autocomplete="off" /><button @click="choosePath('destination', true)">{{ t("action.browse") }}</button></div><datalist id="recent-destination-paths"><option v-for="path in recentPaths.destinations" :key="path" :value="path"></option></datalist></label>
+        <label>{{ t("editor.compare") }}<select v-model="selectedRule.copy.compare"><option value="size-and-mtime">{{ t("editor.compare.sizeAndMtime") }}</option><option value="size-only">{{ t("editor.compare.sizeOnly") }}</option></select></label>
+        <label>{{ t("editor.overwrite") }}<select v-model="selectedRule.copy.overwrite"><option value="if-changed">{{ t("editor.overwrite.ifChanged") }}</option><option value="never">{{ t("editor.overwrite.never") }}</option><option value="always">{{ t("editor.overwrite.always") }}</option></select></label>
+        <label>{{ t("editor.trigger") }}<select :value="selectedRule.trigger.type" @change="changeTrigger"><option value="manual">{{ t("editor.trigger.manual") }}</option><option value="watch">{{ t("editor.trigger.watch") }}</option><option value="interval">{{ t("editor.trigger.interval") }}</option><option value="cron">{{ t("editor.trigger.cron") }}</option></select></label>
+        <label>{{ t("editor.concurrency") }}<input v-model.number="selectedRule.copy.maxConcurrency" type="number" min="1" max="64" /></label>
+        <label>{{ t("editor.retries") }}<input v-model.number="selectedRule.copy.retryCount" type="number" min="0" max="20" /></label>
+        <label v-if="selectedRule.trigger.type === 'watch'">{{ t("editor.debounceMs") }}<input v-model.number="selectedRule.trigger.debounceMs" type="number" min="100" /></label>
+        <label v-if="selectedRule.trigger.type === 'interval'">{{ t("editor.intervalSeconds") }}<input v-model.number="selectedRule.trigger.seconds" type="number" min="1" /></label>
+        <label v-if="selectedRule.trigger.type === 'cron'" class="wide">{{ t("editor.cronExpression") }}<input v-model="selectedRule.trigger.expression" /></label>
+        <label v-if="selectedRule.trigger.type !== 'manual'" class="checkbox"><input v-model="selectedRule.enabled" type="checkbox" /><span>{{ t("editor.ruleEnabled") }}</span></label>
+        <label class="checkbox"><input v-model="selectedRule.filters.includeHidden" type="checkbox" /><span>{{ t("editor.includeHidden") }}</span></label>
+        <label class="checkbox"><input v-model="selectedRule.copy.preserveMtime" type="checkbox" /><span>{{ t("editor.preserveMtime") }}</span></label>
+        <label class="wide">{{ t("editor.destName") }}
           <div class="field-action">
             <template v-if="selectedRule.copy.rename">
-              <input v-model="selectedRule.copy.rename.pattern" placeholder="Source name pattern, e.g. ^(.+)_(\d+\.\d+\.\d+\.\d+)_(.+)\.(.+)$" aria-label="Source name pattern" />
-              <input v-model="selectedRule.copy.rename.destination" placeholder="Destination template, e.g. $1_$2.$4" aria-label="Destination template" />
-              <button type="button" @click="removeRename">Remove</button>
+              <input v-model="selectedRule.copy.rename.pattern" :placeholder="t('editor.renamePatternPlaceholder')" :aria-label="t('editor.renamePatternAria')" />
+              <input v-model="selectedRule.copy.rename.destination" :placeholder="t('editor.renameDestPlaceholder')" :aria-label="t('editor.renameDestAria')" />
+              <button type="button" @click="removeRename">{{ t("action.remove") }}</button>
             </template>
-            <button v-else type="button" class="add-group" @click="addRename">Add rename rule</button>
+            <button v-else type="button" class="add-group" @click="addRename">{{ t("editor.addRename") }}</button>
           </div>
-          <small class="hint">Match the source file name with a regex; $1..$9 in the template become capture groups.</small>
+          <small class="hint">{{ t("editor.renameHint") }}</small>
           <small v-if="renameExample" class="hint rename-example">{{ renameExample }}</small>
         </label>
-        <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">Automatic jobs run only while the desktop application is open.</p>
+        <p v-if="selectedRule.trigger.type !== 'manual'" class="hint wide">{{ t("editor.autoJobHint") }}</p>
       </section>
-      <section class="card"><div class="toolbar"><h3>Files to copy</h3><span></span><div class="view-switch" role="group" aria-label="Selection mode">
-        <button type="button" :class="{ active: sourceMode === 'manual' }" :aria-pressed="sourceMode === 'manual'" @click="setSourceMode('manual')">Manual</button>
-        <button type="button" :class="{ active: sourceMode === 'groups' }" :aria-pressed="sourceMode === 'groups'" @click="setSourceMode('groups')">Group</button>
-      </div><button @click="browseSource">Browse source tree</button></div>
-        <p class="hint">{{ sourceMode === 'manual' ? 'Check the files and folders to copy. Nothing is copied until you make a selection; unchecked entries are skipped.' : 'Group mode extracts a version from each top-level file name; select the versions to copy.' }}</p>
+      <section class="card"><div class="toolbar"><h3>{{ t("files.title") }}</h3><span></span><div class="view-switch" role="group" :aria-label="t('files.modeAria')">
+        <button type="button" :class="{ active: sourceMode === 'manual' }" :aria-pressed="sourceMode === 'manual'" @click="setSourceMode('manual')">{{ t("files.mode.manual") }}</button>
+        <button type="button" :class="{ active: sourceMode === 'groups' }" :aria-pressed="sourceMode === 'groups'" @click="setSourceMode('groups')">{{ t("files.mode.group") }}</button>
+      </div><button @click="browseSource">{{ t("files.browse") }}</button></div>
+        <p class="hint">{{ sourceMode === 'manual' ? t('files.manualHint') : t('files.groupHint') }}</p>
         <template v-if="sourceMode === 'manual'">
         <div v-if="sourceEntries.length" class="result-filters source-filters" role="search">
-          <input v-model="sourceQuery" type="search" placeholder="Filter source path" aria-label="Filter source entries by path" />
-          <div class="view-switch" role="group" aria-label="Source layout">
-            <button type="button" :class="{ active: sourceView === 'list' }" :aria-pressed="sourceView === 'list'" @click="sourceView = 'list'">List</button>
-            <button type="button" :class="{ active: sourceView === 'tree' }" :aria-pressed="sourceView === 'tree'" @click="sourceView = 'tree'">Tree</button>
+          <input v-model="sourceQuery" type="search" :placeholder="t('files.filterPath')" :aria-label="t('files.filterEntriesAria')" />
+          <div class="view-switch" role="group" :aria-label="t('files.layoutAria')">
+            <button type="button" :class="{ active: sourceView === 'list' }" :aria-pressed="sourceView === 'list'" @click="sourceView = 'list'">{{ t("files.view.list") }}</button>
+            <button type="button" :class="{ active: sourceView === 'tree' }" :aria-pressed="sourceView === 'tree'" @click="sourceView = 'tree'">{{ t("files.view.tree") }}</button>
           </div>
-          <small>{{ sourceView === 'list' ? `${sortedSourceFiles.length} of ${sourceFiles.length} files` : `${filteredSourceEntries.length} of ${sourceEntries.length} entries` }}</small>
+          <small>{{ sourceView === 'list' ? t('files.countFiles', { n: sortedSourceFiles.length, m: sourceFiles.length }) : t('files.countEntries', { n: filteredSourceEntries.length, m: sourceEntries.length }) }}</small>
         </div>
-        <ul v-if="sourceView === 'tree' && filteredSourceEntries.length" class="source-tree" role="tree" aria-label="Files to copy">
+        <ul v-if="sourceView === 'tree' && filteredSourceEntries.length" class="source-tree" role="tree" :aria-label="t('files.treeAria')">
           <SourceTreeNode
             v-for="node in sourceTree"
             :key="node.relativePath"
@@ -524,17 +540,17 @@ onMounted(async () => {
               <tr>
                 <th :aria-sort="ariaSort('name')">
                   <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'name' }" @click="sortFilesBy('name')">
-                    Name <span v-if="sourceSortKey === 'name'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("files.col.name") }} <span v-if="sourceSortKey === 'name'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
                 <th class="num" :aria-sort="ariaSort('size')">
                   <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'size' }" @click="sortFilesBy('size')">
-                    Size <span v-if="sourceSortKey === 'size'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("files.col.size") }} <span v-if="sourceSortKey === 'size'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
                 <th class="num" :aria-sort="ariaSort('modified')">
                   <button type="button" class="sort-header" :class="{ active: sourceSortKey === 'modified' }" @click="sortFilesBy('modified')">
-                    Modified <span v-if="sourceSortKey === 'modified'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("files.col.modified") }} <span v-if="sourceSortKey === 'modified'">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
               </tr>
@@ -560,26 +576,26 @@ onMounted(async () => {
             </tbody>
           </table>
         </div>
-        <p v-else-if="sourceEntries.length" class="filter-empty">{{ sourceView === 'list' ? 'No files match the current filter.' : 'No source entries match the current filter.' }}</p>
+        <p v-else-if="sourceEntries.length" class="filter-empty">{{ sourceView === 'list' ? t('files.noMatch') : t('files.noMatchEntries') }}</p>
         </template>
         <template v-else>
           <div class="group-rules">
             <div v-if="selectedRule.filters.group" class="field-action">
-              <input v-model="selectedRule.filters.group.label" placeholder="Label (optional)" aria-label="Group label" />
-              <input v-model="selectedRule.filters.group.pattern" placeholder="Version pattern, e.g. (\\d+\\.\\d+\\.\\d+\\.\\d+)" aria-label="Version pattern" />
-              <button type="button" @click="removeGroupRule">Remove</button>
+              <input v-model="selectedRule.filters.group.label" :placeholder="t('files.labelOptional')" :aria-label="t('files.groupLabelAria')" />
+              <input v-model="selectedRule.filters.group.pattern" :placeholder="t('files.versionPattern')" :aria-label="t('files.versionPatternAria')" />
+              <button type="button" @click="removeGroupRule">{{ t("action.remove") }}</button>
             </div>
-            <button v-else type="button" class="add-group" @click="addGroupRule">Add rule</button>
+            <button v-else type="button" class="add-group" @click="addGroupRule">{{ t("files.addRule") }}</button>
           </div>
           <div v-if="groupTree.length" class="result-filters source-filters" role="search">
-            <input v-model="sourceQuery" type="search" placeholder="Filter group or file" aria-label="Filter groups and files" />
-            <div class="view-switch" role="group" aria-label="Group layout">
-              <button type="button" :class="{ active: groupView === 'list' }" :aria-pressed="groupView === 'list'" @click="groupView = 'list'">List</button>
-              <button type="button" :class="{ active: groupView === 'tree' }" :aria-pressed="groupView === 'tree'" @click="groupView = 'tree'">Tree</button>
+            <input v-model="sourceQuery" type="search" :placeholder="t('files.filterGroup')" :aria-label="t('files.filterGroupsAria')" />
+            <div class="view-switch" role="group" :aria-label="t('files.groupLayoutAria')">
+              <button type="button" :class="{ active: groupView === 'list' }" :aria-pressed="groupView === 'list'" @click="groupView = 'list'">{{ t("files.view.list") }}</button>
+              <button type="button" :class="{ active: groupView === 'tree' }" :aria-pressed="groupView === 'tree'" @click="groupView = 'tree'">{{ t("files.view.tree") }}</button>
             </div>
-            <small>{{ groupTree.length }} groups</small>
+            <small>{{ t('files.countGroups', { n: groupTree.length }) }}</small>
           </div>
-          <ul v-if="groupView === 'tree' && groupTree.length" class="group-tree" role="tree" aria-label="File groups">
+          <ul v-if="groupView === 'tree' && groupTree.length" class="group-tree" role="tree" :aria-label="t('files.groupsAria')">
             <GroupTreeNode
               v-for="group in groupTree"
               :key="group.key"
@@ -599,10 +615,10 @@ onMounted(async () => {
               </colgroup>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Group</th>
-                  <th class="num">Size</th>
-                  <th class="num">Modified</th>
+                  <th>{{ t("files.col.name") }}</th>
+                  <th>{{ t("files.col.group") }}</th>
+                  <th class="num">{{ t("files.col.size") }}</th>
+                  <th class="num">{{ t("files.col.modified") }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -613,7 +629,7 @@ onMounted(async () => {
                         v-if="row.groupKey"
                         type="checkbox"
                         :checked="row.selected"
-                        :aria-label="`Include group ${row.groupKey}`"
+                        :aria-label="t('files.includeGroupAria', { name: row.groupKey })"
                         @change="toggleGroup(row.groupKey, ($event.target as HTMLInputElement).checked)"
                       />
                       <span v-else class="tree-spacer" aria-hidden="true"></span>
@@ -628,26 +644,26 @@ onMounted(async () => {
               </tbody>
             </table>
           </div>
-          <p v-else-if="sourceEntries.length" class="filter-empty">No files match the current filter.</p>
+          <p v-else-if="sourceEntries.length" class="filter-empty">{{ t('files.noMatch') }}</p>
         </template>
       </section>
-      <section class="card"><div class="toolbar"><h3>Dry-run preview</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? 'Previewing...' : 'Preview' }}</button></div>
+      <section class="card"><div class="toolbar"><h3>{{ t("preview.title") }}</h3><span></span><button :disabled="busy" @click="preview">{{ previewProgress ? t('preview.buttonProgress') : t('preview.button') }}</button></div>
         <div v-if="previewProgress" class="preview-progress" role="status" aria-live="polite">
           <progress v-if="previewProgress.phase === 'planning'" :value="previewProgress.completedEntries" :max="previewProgress.totalEntries || 1"></progress>
           <progress v-else></progress>
-          <p><span v-if="previewProgress.phase === 'scanning'">Scanning source · {{ previewProgress.completedEntries }} entries found</span><span v-else>Building plan · {{ previewProgress.completedEntries }} / {{ previewProgress.totalEntries ?? 0 }} entries</span><small v-if="previewProgress.relativePath">{{ previewProgress.relativePath }}</small></p>
+          <p><span v-if="previewProgress.phase === 'scanning'">{{ t('preview.scanning', { n: previewProgress.completedEntries }) }}</span><span v-else>{{ t('preview.building', { n: previewProgress.completedEntries, m: previewProgress.totalEntries ?? 0 }) }}</span><small v-if="previewProgress.relativePath">{{ previewProgress.relativePath }}</small></p>
         </div>
-        <p v-if="plan">{{ plan.stats.filesToCopy }} files / {{ plan.stats.bytesToCopy }} bytes to copy; {{ plan.stats.filesToSkip }} skipped; {{ plan.stats.warnings }} warnings.</p>
+        <p v-if="plan">{{ t('preview.stats', { files: plan.stats.filesToCopy, bytes: plan.stats.bytesToCopy, skipped: plan.stats.filesToSkip, warnings: plan.stats.warnings }) }}</p>
         <div v-if="plan && plan.items.length" class="result-filters preview-filters" role="search">
-          <input v-model="previewQuery" type="search" placeholder="Filter path or reason" aria-label="Filter preview by path or reason" />
-          <select v-model="previewAction" aria-label="Filter preview by action">
-            <option value="all">All actions</option>
-            <option value="copy-file">Copy files</option>
-            <option value="create-directory">Create folders</option>
-            <option value="skip">Skipped</option>
-            <option value="warn">Warnings</option>
+          <input v-model="previewQuery" type="search" :placeholder="t('preview.filterPath')" :aria-label="t('preview.filterAria')" />
+          <select v-model="previewAction" :aria-label="t('preview.filterActionAria')">
+            <option value="all">{{ t("preview.action.all") }}</option>
+            <option value="copy-file">{{ t("preview.action.copyFile") }}</option>
+            <option value="create-directory">{{ t("preview.action.createDirectory") }}</option>
+            <option value="skip">{{ t("preview.action.skip") }}</option>
+            <option value="warn">{{ t("preview.action.warn") }}</option>
           </select>
-          <small>{{ filteredPlanItems.length }} of {{ plan.items.length }} items</small>
+          <small>{{ t('preview.countItems', { n: filteredPlanItems.length, m: plan.items.length }) }}</small>
         </div>
         <div v-if="plan && sortedPlanItems.length" class="source-list-wrap">
           <table class="source-list">
@@ -661,22 +677,22 @@ onMounted(async () => {
               <tr>
                 <th :aria-sort="previewAriaSort('action')">
                   <button type="button" class="sort-header" :class="{ active: previewSortKey === 'action' }" @click="previewSortBy('action')">
-                    Action <span v-if="previewSortKey === 'action'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("preview.col.action") }} <span v-if="previewSortKey === 'action'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
                 <th :aria-sort="previewAriaSort('source')">
                   <button type="button" class="sort-header" :class="{ active: previewSortKey === 'source' }" @click="previewSortBy('source')">
-                    Source <span v-if="previewSortKey === 'source'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("preview.col.source") }} <span v-if="previewSortKey === 'source'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
                 <th :aria-sort="previewAriaSort('target')">
                   <button type="button" class="sort-header" :class="{ active: previewSortKey === 'target' }" @click="previewSortBy('target')">
-                    Target <span v-if="previewSortKey === 'target'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("preview.col.target") }} <span v-if="previewSortKey === 'target'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
                 <th :aria-sort="previewAriaSort('description')">
                   <button type="button" class="sort-header" :class="{ active: previewSortKey === 'description' }" @click="previewSortBy('description')">
-                    Description <span v-if="previewSortKey === 'description'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                    {{ t("preview.col.description") }} <span v-if="previewSortKey === 'description'">{{ previewSortDirection === 'asc' ? '↑' : '↓' }}</span>
                   </button>
                 </th>
               </tr>
@@ -691,14 +707,14 @@ onMounted(async () => {
             </tbody>
           </table>
         </div>
-        <p v-else-if="plan && plan.items.length" class="filter-empty">No preview items match the current filter.</p>
-        <p v-else-if="plan" class="filter-empty">No planned operations.</p>
+        <p v-else-if="plan && plan.items.length" class="filter-empty">{{ t('preview.noMatch') }}</p>
+        <p v-else-if="plan" class="filter-empty">{{ t('preview.noPlanned') }}</p>
       </section>
     </main>
     <main v-else>
-      <div class="toolbar"><h2>Job history</h2><span></span><button @click="refresh">Refresh</button></div>
-      <section v-if="progress" class="card"><div class="toolbar"><h3>Current job</h3><span></span><button @click="cancelJob">Cancel</button></div><progress :value="progress.completedFiles" :max="progress.totalFiles || 1"></progress><p>{{ progress.completedFiles }} / {{ progress.totalFiles }} files · {{ progress.relativePath }}</p></section>
-      <article v-for="job in jobs" :key="job.jobId" class="card"><div class="toolbar"><strong :class="`status ${job.status}`">{{ job.status }}</strong><span></span><time>{{ new Date(job.finishedAt).toLocaleString() }}</time></div><p>{{ job.copiedFiles }} copied · {{ job.skippedFiles }} skipped · {{ job.failedFiles }} failed · {{ job.copiedBytes }} bytes</p><details @toggle="($event.target as HTMLDetailsElement).open && loadJobEvents(job.jobId)"><summary>Detailed log</summary><div class="plan"><div v-for="event in jobEvents[job.jobId] ?? []" :key="`${event.timestamp}-${event.relativePath}`"><code>{{ event.result }}</code> {{ event.relativePath }} <small>{{ event.message }}</small></div></div></details></article>
+      <div class="toolbar"><h2>{{ t("jobs.title") }}</h2><span></span><button @click="refresh">{{ t("action.refresh") }}</button></div>
+      <section v-if="progress" class="card"><div class="toolbar"><h3>{{ t("jobs.current") }}</h3><span></span><button @click="cancelJob">{{ t("action.cancel") }}</button></div><progress :value="progress.completedFiles" :max="progress.totalFiles || 1"></progress><p>{{ t('jobs.progress', { completed: progress.completedFiles, total: progress.totalFiles ?? '', path: progress.relativePath ?? '' }) }}</p></section>
+      <article v-for="job in jobs" :key="job.jobId" class="card"><div class="toolbar"><strong :class="`status ${job.status}`">{{ job.status }}</strong><span></span><time>{{ new Date(job.finishedAt).toLocaleString() }}</time></div><p>{{ t('jobs.summary', { copied: job.copiedFiles, skipped: job.skippedFiles, failed: job.failedFiles, bytes: job.copiedBytes }) }}</p><details @toggle="($event.target as HTMLDetailsElement).open && loadJobEvents(job.jobId)"><summary>{{ t("jobs.log") }}</summary><div class="plan"><div v-for="event in jobEvents[job.jobId] ?? []" :key="`${event.timestamp}-${event.relativePath}`"><code>{{ event.result }}</code> {{ event.relativePath }} <small>{{ event.message }}</small></div></div></details></article>
     </main>
   </div>
   <div v-if="confirmDialog" class="modal-backdrop" @click.self="resolveConfirm(false)">
@@ -706,8 +722,8 @@ onMounted(async () => {
       <h3>{{ confirmDialog.title }}</h3>
       <p>{{ confirmDialog.message }}</p>
       <div class="actions">
-        <button type="button" @click="resolveConfirm(false)">Cancel</button>
-        <button type="button" class="primary" @click="resolveConfirm(true)">Confirm</button>
+        <button type="button" @click="resolveConfirm(false)">{{ t("action.cancel") }}</button>
+        <button type="button" class="primary" @click="resolveConfirm(true)">{{ t("action.confirm") }}</button>
       </div>
     </div>
   </div>

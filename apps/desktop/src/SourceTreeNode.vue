@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { t } from "./i18n";
 import { formatBytes, formatModified, type SourceTreeNode } from "./source-tree";
 
 const props = withDefaults(defineProps<{
@@ -64,8 +65,8 @@ function forwardInclusion(path: string, checked: boolean) {
         v-if="hasChildren"
         class="tree-toggle"
         type="button"
-        :aria-label="expanded ? `Collapse ${node.name}` : `Expand ${node.name}`"
-        :title="expanded ? 'Collapse folder' : 'Expand folder'"
+        :aria-label="expanded ? t('tree.collapse', { name: node.name }) : t('tree.expand', { name: node.name })"
+        :title="expanded ? t('tree.collapseFolder') : t('tree.expandFolder')"
         @click="toggleExpansion"
       >
         <span class="tree-chevron" :class="{ expanded }" aria-hidden="true"></span>
@@ -76,7 +77,7 @@ function forwardInclusion(path: string, checked: boolean) {
         type="checkbox"
         :checked="effectivelyIncluded"
         :indeterminate="hasDescendantOverride"
-        :aria-label="`Include ${node.relativePath}`"
+        :aria-label="t('tree.include', { path: node.relativePath })"
         @change="handleInclusion"
       />
       <span class="source-tree-name" :class="{ directory: node.directory }" :title="node.relativePath">
