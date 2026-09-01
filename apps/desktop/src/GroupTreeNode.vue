@@ -7,8 +7,10 @@ const props = withDefaults(defineProps<{
   group: GroupTreeNode;
   renames?: ReadonlyMap<string, string>;
   expandAll?: boolean;
+  disabled?: boolean;
 }>(), {
   expandAll: false,
+  disabled: false,
   renames: () => new Map<string, string>(),
 });
 
@@ -61,6 +63,7 @@ function displayName() {
         class="tree-checkbox"
         type="checkbox"
         :checked="group.selected"
+        :disabled="disabled"
         :aria-label="t('group.copy', { name: displayName() })"
         @change="handleToggle"
       />

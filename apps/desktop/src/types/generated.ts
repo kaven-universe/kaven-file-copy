@@ -22,6 +22,7 @@ export interface CopyRule {
     includeHidden: boolean;
     group: GroupRule | null;
     selectedGroups: string[];
+    autoLatestGroup: boolean;
     selectionMode: SelectionMode;
   };
   copy: {

@@ -22,7 +22,8 @@
         "includeHidden": { "type": "boolean" },
         "selectionMode": { "enum": ["manual", "groups"] },
         "group": { "$ref": "#/$defs/groupRule" },
-        "selectedGroups": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "selectedGroups": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "autoLatestGroup": { "type": "boolean" }
       }
     },
     "copy": {

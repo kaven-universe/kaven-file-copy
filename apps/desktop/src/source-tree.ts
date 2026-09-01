@@ -176,6 +176,23 @@ export function buildGroupTree(
   );
 }
 
+/**
+ * Returns the newest group key among the top-level source entries, or `null`
+ * when no file matches the group pattern. Mirrors the Rust engine's
+ * auto-latest selection.
+ */
+export function latestGroupKey(entries: SourceEntry[], group: GroupRule | null): string | null {
+  const keys = new Set<string>();
+  for (const file of entries) {
+    if (file.directory) continue;
+    if (normalizeTreePath(file.relativePath).includes("/")) continue;
+    const name = entryName(file);
+    const key = group ? extractGroupKey(group.pattern, name) : null;
+    if (key !== null) keys.add(key);
+  }
+  return [...keys].sort(compareVersions).at(-1) ?? null;
+}
+
 function extractGroupKey(pattern: string, file: string): string | null {
   try {
     const match = new RegExp(pattern).exec(file);

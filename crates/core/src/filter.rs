@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::path::Path;
 
 use regex::Regex;
@@ -116,6 +117,41 @@ pub fn validate_group_rule(group: &Option<GroupRule>) -> Result<()> {
 /// Compiles the configured group rule for version extraction.
 pub fn compile_group_rule(group: &Option<GroupRule>) -> Result<Option<GroupMatcher>> {
     group.as_ref().map(compile_group_matcher).transpose()
+}
+
+/// Compares dotted version keys numerically, segment by segment
+/// (1.0.0.10 > 1.0.0.2). Non-numeric segments fall back to a
+/// case-insensitive lexicographic comparison. Mirrors the frontend's
+/// `compareVersions`.
+pub fn compare_version_keys(left: &str, right: &str) -> Ordering {
+    let left_parts: Vec<&str> = left.split('.').collect();
+    let right_parts: Vec<&str> = right.split('.').collect();
+    let length = left_parts.len().max(right_parts.len());
+    for index in 0..length {
+        let left_part = left_parts.get(index);
+        let right_part = right_parts.get(index);
+        let ordering = match (left_part, right_part) {
+            (None, _) => Ordering::Less,
+            (_, None) => Ordering::Greater,
+            (Some(left), Some(right)) => {
+                let left_number = left.parse::<f64>();
+                let right_number = right.parse::<f64>();
+                if let (Ok(left_number), Ok(right_number)) = (left_number, right_number) {
+                    if left_number != right_number {
+                        left_number.total_cmp(&right_number)
+                    } else {
+                        Ordering::Equal
+                    }
+                } else {
+                    left.to_lowercase().cmp(&right.to_lowercase())
+                }
+            }
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
 }
 
 /// A compiled rename rule that rewrites a source file name into a destination name.

@@ -129,6 +129,10 @@ pub struct FilterConfig {
     /// Extracted values (for example versions) the user has checked.
     #[serde(default)]
     pub selected_groups: Vec<String>,
+    /// When true, group mode copies only the newest group by version,
+    /// ignoring `selected_groups`.
+    #[serde(default)]
+    pub auto_latest_group: bool,
     /// Which selection model drives the copy: manual or group rules.
     #[serde(default)]
     pub selection_mode: SelectionMode,

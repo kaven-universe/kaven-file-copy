@@ -17,6 +17,7 @@ import {
   formatModified,
   hasPathDescendantOverride,
   isPathIncluded,
+  latestGroupKey,
   normalizeTreePath,
   setPathIncluded,
   sortSourceEntries,
@@ -81,12 +82,18 @@ const sourceRenames = computed(() => {
   return map;
 });
 const sourceTree = computed(() => buildSourceTree(filteredSourceEntries.value));
-const groupTree = computed(() => buildGroupTree(
-  filteredSourceEntries.value,
-  selectedRule.value?.filters.group ?? null,
-  selectedRule.value?.filters.selectedGroups ?? [],
-  sourceQuery.value,
-));
+const groupTree = computed(() => {
+  const rule = selectedRule.value;
+  if (!rule) return [];
+  const selected: string[] = [];
+  if (rule.filters.autoLatestGroup) {
+    const latest = latestGroupKey(sourceEntries.value, rule.filters.group);
+    if (latest) selected.push(latest);
+  } else {
+    selected.push(...rule.filters.selectedGroups);
+  }
+  return buildGroupTree(filteredSourceEntries.value, rule.filters.group, selected, sourceQuery.value);
+});
 const groupFileRows = computed(() => groupTree.value.flatMap((group) =>
   group.matched.map((file) => ({
     ...file,
@@ -120,7 +127,7 @@ function newRule(): CopyRule {
   return {
     schemaVersion: 1, id: crypto.randomUUID(), name: t("defaults.newRuleName"), enabled: true,
     source: { type: "local", path: "" }, destination: { type: "local", path: "" },
-    filters: { exclude: [], include: [], includeHidden: true, group: null, selectedGroups: [], selectionMode: "manual" },
+    filters: { exclude: [], include: [], includeHidden: true, group: null, selectedGroups: [], autoLatestGroup: false, selectionMode: "manual" },
     copy: { mode: "incremental", compare: "size-and-mtime", overwrite: "if-changed", symlinks: "skip", preserveMtime: true, maxConcurrency: 4, retryCount: 2, rename: null },
     trigger: { type: "manual" },
   };
@@ -155,6 +162,7 @@ function edit(rule?: CopyRule) {
   copy.filters.exclude ??= [];
   copy.filters.group ??= null;
   copy.filters.selectedGroups ??= [];
+  copy.filters.autoLatestGroup ??= false;
   copy.filters.selectionMode ??= "manual";
   copy.copy.rename ??= null;
   originalRule.value = structuredClone(copy);
@@ -273,7 +281,7 @@ function removeGroupRule() {
 }
 
 function toggleGroup(name: string, checked: boolean) {
-  if (!selectedRule.value) return;
+  if (!selectedRule.value || selectedRule.value.filters.autoLatestGroup) return;
   const selected = new Set(selectedRule.value.filters.selectedGroups);
   if (checked) {
     selected.add(name);
@@ -584,6 +592,8 @@ onMounted(async () => {
         <p v-else-if="sourceEntries.length" class="filter-empty">{{ sourceView === 'list' ? t('files.noMatch') : t('files.noMatchEntries') }}</p>
         </template>
         <template v-else>
+          <label class="checkbox"><input v-model="selectedRule.filters.autoLatestGroup" type="checkbox" /><span>{{ t("files.autoLatestGroup") }}</span></label>
+          <p v-if="selectedRule.filters.autoLatestGroup" class="hint wide">{{ t("files.autoLatestHint") }}</p>
           <div class="group-rules">
             <div v-if="selectedRule.filters.group" class="field-action">
               <input v-model="selectedRule.filters.group.label" :placeholder="t('files.labelOptional')" :aria-label="t('files.groupLabelAria')" />
@@ -607,6 +617,7 @@ onMounted(async () => {
               :group="group"
               :renames="sourceRenames"
               :expand-all="sourceFilterActive"
+              :disabled="selectedRule.filters.autoLatestGroup"
               @toggle-group="toggleGroup"
             />
           </ul>
@@ -634,6 +645,7 @@ onMounted(async () => {
                         v-if="row.groupKey"
                         type="checkbox"
                         :checked="row.selected"
+                        :disabled="selectedRule.filters.autoLatestGroup"
                         :aria-label="t('files.includeGroupAria', { name: row.groupKey })"
                         @change="toggleGroup(row.groupKey, ($event.target as HTMLInputElement).checked)"
                       />
