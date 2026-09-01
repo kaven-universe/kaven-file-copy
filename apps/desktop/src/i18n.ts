@@ -99,6 +99,8 @@ const messages: Record<string, Record<Locale, string>> = {
   "files.groupsAria": { en: "File groups", zh: "文件分组" },
   "files.includeGroupAria": { en: "Include group {name}", zh: "包含分组 {name}" },
   "files.groupOther": { en: "Other files", zh: "其他文件" },
+  "files.autoLatestGroup": { en: "Auto-select the newest group", zh: "自动选择最新分组" },
+  "files.autoLatestHint": { en: "The group with the newest version is copied automatically; manual group selection is ignored.", zh: "将自动复制版本最新的分组；手动分组选择将被忽略。" },
 
   "preview.title": { en: "Dry-run preview", zh: "试运行预览" },
   "preview.button": { en: "Preview", zh: "预览" },

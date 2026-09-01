@@ -10,6 +10,7 @@ import {
   formatModified,
   hasPathDescendantOverride,
   isPathIncluded,
+  latestGroupKey,
   setPathIncluded,
   sortSourceEntries,
 } from "../src/source-tree";
@@ -187,6 +188,21 @@ test("buildGroupTree puts unmatched files in the other group and filters by quer
 
   const filtered = buildGroupTree(entries, group, [], "readme");
   assert.deepEqual(filtered.map((node) => node.key), [""]);
+});
+
+test("latestGroupKey returns the newest version among top-level files", () => {
+  const entries = [
+    { relativePath: "DSP_1.0.0.1_Release.exe", directory: false, size: 1, modified: 1 },
+    { relativePath: "DSP_1.0.0.10_Release.exe", directory: false, size: 2, modified: 2 },
+    { relativePath: "DSP_2.3.1.0_Release.exe", directory: false, size: 3, modified: 3 },
+    { relativePath: "nested/DSP_9.9.9.9_Release.exe", directory: false, size: 4, modified: 4 },
+    { relativePath: "readme.md", directory: false, size: 5, modified: 5 },
+  ];
+  const group = { label: "", pattern: "(\\d+\\.\\d+\\.\\d+\\.\\d+)" };
+
+  assert.equal(latestGroupKey(entries, group), "2.3.1.0");
+  assert.equal(latestGroupKey(entries, null), null);
+  assert.equal(latestGroupKey([{ relativePath: "readme.md", directory: false, size: 1, modified: 1 }], group), null);
 });
 
 test("buildGroupTree tolerates invalid regex patterns and missing rules", () => {

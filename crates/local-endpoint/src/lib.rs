@@ -18,10 +18,11 @@ use std::{
 use chrono::Utc;
 use filetime::FileTime;
 use kfc_core::{
-    CompareStrategy, CopyPlan, CopyRule, FileError, InclusionMatcher, IoResultExt, JobStatus,
-    JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
+    CompareStrategy, CopyPlan, CopyRule, FileError, GroupMatcher, InclusionMatcher, IoResultExt,
+    JobStatus, JobSummary, KfcError, OverwritePolicy, PlanAction, PlanItem, PlanProgressEvent,
     PlanProgressPhase, PlanStats, ProgressEvent, RenameMatcher, Result, SelectionMode,
-    compile_group_rule, compile_rename_rule, validate_group_rule, validate_rename_rule,
+    compare_version_keys, compile_group_rule, compile_rename_rule, validate_group_rule,
+    validate_rename_rule,
 };
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -97,6 +98,9 @@ impl LocalCopyEngine {
         let Some(matcher) = matcher else {
             return Ok(Vec::new());
         };
+        if rule.filters.auto_latest_group {
+            return self.latest_group_includes(paths, &matcher);
+        }
         if rule.filters.selected_groups.is_empty() {
             return Ok(Vec::new());
         }
@@ -120,6 +124,42 @@ impl LocalCopyEngine {
             }
         }
         Ok(includes)
+    }
+
+    /// Includes every top-level file whose extracted key is the newest version.
+    ///
+    /// Used by `auto_latest_group`: the newest key wins by numeric dotted-version
+    /// comparison, and files that do not match the group pattern are never
+    /// selected.
+    fn latest_group_includes(
+        &self,
+        paths: &ValidatedPaths,
+        matcher: &GroupMatcher,
+    ) -> Result<Vec<String>> {
+        let mut by_key: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut latest: Option<String> = None;
+        for entry in fs::read_dir(&paths.source).at(&paths.source)? {
+            let entry = entry.at(&paths.source)?;
+            let file_type = entry.file_type().at(entry.path())?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(key) = matcher.extract(&name) else {
+                continue;
+            };
+            by_key.entry(key.clone()).or_default().push(name);
+            let is_newer = latest.as_deref().is_none_or(|current| {
+                compare_version_keys(&key, current) == std::cmp::Ordering::Greater
+            });
+            if is_newer {
+                latest = Some(key);
+            }
+        }
+        Ok(latest
+            .and_then(|key| by_key.remove(&key))
+            .unwrap_or_default())
     }
 
     fn plan_internal<F>(&self, rule: &CopyRule, mut progress: Option<F>) -> Result<CopyPlan>
@@ -915,6 +955,45 @@ mod tests {
         assert!(!destination.join("DSP_2.3.1.0_Release.exe").exists());
         assert!(!destination.join("DSP_2.3.1.0_Docs.pdf").exists());
         assert!(!destination.join("nested/DSP_1.0.0.1_Extra.exe").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn auto_latest_group_copies_only_the_newest_version() {
+        let root = temp_root("grouped-latest");
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_1.0.0.1_Source.zip"), b"zip").unwrap();
+        fs::write(source.join("DSP_1.0.0.10_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("DSP_2.3.1.0_Release.exe"), b"exe").unwrap();
+        fs::write(source.join("readme.md"), b"md").unwrap();
+        fs::write(source.join("nested/DSP_2.3.1.0_Extra.exe"), b"exe").unwrap();
+        let mut rule = rule(source, destination.clone());
+        rule.filters.selection_mode = SelectionMode::Groups;
+        rule.filters.group = Some(GroupRule {
+            label: "Version".into(),
+            pattern: "(\\d+\\.\\d+\\.\\d+\\.\\d+)".into(),
+        });
+        // Selected groups are ignored: the newest version must win.
+        rule.filters.selected_groups = vec!["1.0.0.1".into()];
+        rule.filters.auto_latest_group = true;
+        let engine = LocalCopyEngine;
+        let plan = engine.plan(&rule).unwrap();
+
+        assert_eq!(plan.stats.files_to_copy, 1);
+        let summary = engine
+            .execute(&rule, &plan, &AtomicBool::new(false), |_| {})
+            .unwrap();
+        assert_eq!(summary.status, JobStatus::Succeeded);
+        assert!(destination.join("DSP_2.3.1.0_Release.exe").exists());
+        assert!(!destination.join("DSP_1.0.0.1_Release.exe").exists());
+        assert!(!destination.join("DSP_1.0.0.1_Source.zip").exists());
+        assert!(!destination.join("DSP_1.0.0.10_Release.exe").exists());
+        assert!(!destination.join("readme.md").exists());
+        assert!(!destination.join("nested/DSP_2.3.1.0_Extra.exe").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
