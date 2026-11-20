@@ -1,0 +1,14 @@
+{
+  "eslint.workingDirectories": [
+    {
+      "directory": "apps/desktop",
+      "changeProcessCWD": true
+    }
+  ],
+  "rust-analyzer.cargo.allTargets": true,
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml"
+  ],
+  "typescript.tsdk": "apps/desktop/node_modules/typescript/lib"
+}

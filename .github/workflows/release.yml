@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-windows:
+    name: Verify Windows release source
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate release identity
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { throw "Release workflow must be triggered by a tag." }
+          ./scripts/test-release-identity.ps1 -Tag $env:GITHUB_REF_NAME
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: stable
+          components: clippy,rustfmt
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Verify frontend
+        working-directory: apps/desktop
+        run: npm run verify
+      - name: Verify Rust
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-targets --all-features --locked
+      - name: Audit frontend dependencies
+        working-directory: apps/desktop
+        run: npm audit --audit-level=high
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+
+  release-windows:
+    name: Build Windows installer
+    environment: release
+    runs-on: windows-latest
+    needs: verify-windows
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
+        with:
+          toolchain: stable
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Build CLI
+        run: cargo build -p kfc-cli --release --locked
+      - name: Build draft release
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop/src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: Kaven File Copy ${{ github.ref_name }}
+          generateReleaseNotes: false
+          releaseDraft: true
+          prerelease: false
+          releaseAssetNamePattern: "Kaven-File-Copy_[version]_[arch][setup][ext]"
+      - name: Verify assets and publish checksums
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $release = gh release view $env:RELEASE_TAG --json isDraft,assets | ConvertFrom-Json
+          if (-not $release.isDraft) { throw "Release $env:RELEASE_TAG must remain a draft until verification finishes." }
+          $installerAssets = @($release.assets | Where-Object { $_.name -like 'Kaven-File-Copy_*-setup.exe' })
+          if ($installerAssets.Count -ne 1) { throw "Expected exactly one NSIS installer, found $($installerAssets.Count)." }
+          if (-not ($release.assets.name -contains 'latest.json')) { throw 'The signed updater manifest latest.json is missing.' }
+          if (@($release.assets | Where-Object { $_.name -like '*.sig' }).Count -lt 1) { throw 'The updater signature asset is missing.' }
+          $evidenceDirectory = Join-Path $env:RUNNER_TEMP 'kaven-file-copy-release-evidence'
+          New-Item -ItemType Directory -Path $evidenceDirectory | Out-Null
+          $manifestPath = Join-Path $evidenceDirectory 'latest.json'
+          gh release download $env:RELEASE_TAG --pattern 'latest.json' --dir $evidenceDirectory
+          $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+          if ($manifest.version -ne $env:RELEASE_TAG) { throw "Updater manifest version $($manifest.version) does not match release tag $env:RELEASE_TAG." }
+          $installerUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$($installerAssets[0].name)"
+          $platformNames = @('windows-x86_64', 'windows-x86_64-nsis')
+          foreach ($platformName in $platformNames) {
+            $platform = $manifest.platforms.PSObject.Properties[$platformName]
+            if ($null -eq $platform) { throw "Updater manifest platform $platformName is missing." }
+            $platform.Value.url = $installerUrl
+            if ($platform.Value.url -ne $installerUrl) { throw "Failed to set the stable updater URL for $platformName." }
+          }
+          $manifestJson = $manifest | ConvertTo-Json -Depth 10
+          [IO.File]::WriteAllText($manifestPath, $manifestJson + "`n", [Text.UTF8Encoding]::new($false))
+          gh release upload $env:RELEASE_TAG $manifestPath --clobber
+          gh release download $env:RELEASE_TAG --pattern $installerAssets[0].name --dir $evidenceDirectory
+          Copy-Item -LiteralPath target/release/kfc.exe -Destination $evidenceDirectory
+          Copy-Item -LiteralPath target/release/kaven-file-copy-desktop.exe -Destination $evidenceDirectory
+          $lines = Get-ChildItem -LiteralPath $evidenceDirectory -File | Sort-Object Name | ForEach-Object {
+            $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
+            '{0}  {1}' -f $hash.Hash.ToLowerInvariant(), $_.Name
+          }
+          [IO.File]::WriteAllLines('SHA256SUMS', [string[]]$lines, [Text.Encoding]::ASCII)
+          gh release upload $env:RELEASE_TAG target/release/kfc.exe target/release/kaven-file-copy-desktop.exe SHA256SUMS --clobber
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release edit $env:RELEASE_TAG --notes-file "docs/releases/$env:RELEASE_TAG.md" --draft=false --prerelease=false --latest

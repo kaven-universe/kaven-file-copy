@@ -1,0 +1,74 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "desktop: dev web",
+      "type": "npm",
+      "script": "dev:web",
+      "path": "apps/desktop",
+      "isBackground": true,
+      "options": {
+        "env": {
+          "NO_COLOR": "1",
+          "FORCE_COLOR": "0"
+        }
+      },
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^\\s*(?:error|Error):\\s+(.*)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*VITE.*ready in.*",
+          "endsPattern": ".*Local:.*127\\.0\\.0\\.1.*5173.*"
+        }
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "group": "desktop-web"
+      }
+    },
+    {
+      "label": "desktop: verify",
+      "type": "npm",
+      "script": "verify",
+      "path": "apps/desktop",
+      "problemMatcher": []
+    },
+    {
+      "label": "rust: test workspace",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "test",
+        "--workspace"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: clippy workspace",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    }
+  ]
+}

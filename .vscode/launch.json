@@ -1,0 +1,78 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Desktop: Tauri (Rust)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--package",
+          "kaven-file-copy-desktop"
+        ],
+        "filter": {
+          "name": "kaven-file-copy-desktop",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "kaven_file_copy_desktop=debug,kfc=debug"
+      },
+      "preLaunchTask": "desktop: dev web",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "terminal": "integrated"
+    },
+    {
+      "name": "Web UI: Edge",
+      "type": "pwa-msedge",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/apps/desktop",
+      "preLaunchTask": "desktop: dev web",
+      "sourceMaps": true
+    },
+    {
+      "name": "CLI: Validate rule",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--package",
+          "kfc-cli"
+        ],
+        "filter": {
+          "name": "kfc",
+          "kind": "bin"
+        }
+      },
+      "args": [
+        "rule",
+        "validate",
+        "${input:ruleFile}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_BACKTRACE": "1",
+        "RUST_LOG": "kfc=debug"
+      },
+      "sourceLanguages": [
+        "rust"
+      ],
+      "terminal": "integrated"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "ruleFile",
+      "type": "promptString",
+      "description": "Copy rule JSON file path"
+    }
+  ]
+}
